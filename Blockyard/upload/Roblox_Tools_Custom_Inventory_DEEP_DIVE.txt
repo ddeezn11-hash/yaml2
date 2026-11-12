@@ -1,0 +1,1197 @@
+ROBLOX TOOLS + CUSTOM INVENTORY SYSTEMS
+DEEP-DIVE IMPLEMENTATION GUIDE
+
+This guide explains how to CREATE Roblox Tools, how Roblox moves them through a player's inventory, how to REPLACE the default Backpack interface, how to build a custom hotbar and item grid, how to detect whether a Tool is equipped or actively being used, and how to send tool-use requests safely to the server.
+
+The examples use Luau and Roblox Studio. The custom interface example is a working foundation: it creates its own hotbar and backpack window, lists Tools in the player's Backpack and Character, equips a selected Tool, and refreshes when items are added, removed, equipped, or unequipped. It is not a complete drag-and-drop survival inventory; that needs a separate item-data model, explained later.
+
+============================================================
+1. THE THREE DIFFERENT THINGS PEOPLE CALL "INVENTORY"
+============================================================
+
+Roblox has three related but separate systems:
+
+A. TOOL INSTANCE
+A Tool is an object in the Roblox DataModel. It represents an equipable object or ability: a pickaxe, sword, flashlight, key, medical kit, scanner, building wand, or similar item. A Tool can contain Parts, MeshParts, Sounds, Animations, Attachments, LocalScripts, Scripts, and configuration values or Attributes.
+
+B. PLAYER CONTAINERS
+A Player normally has a Backpack for the Tools currently carried at runtime. A player's Character is the character Model in Workspace. When a Tool is equipped, Roblox moves the Tool from Backpack into Character. When it is unequipped, Roblox moves it back to Backpack. This parent change is one of the easiest ways to inspect the current equip state.
+
+C. BACKPACK COREGUI
+The familiar Roblox hotbar and backpack window are the default interface. This is only the standard interface for showing and selecting Tools. Hiding this interface does NOT delete the Backpack, delete the Tools, or create a new inventory. It only hides the standard UI. Your own ScreenGui must draw the item slots and implement selection.
+
+This separation is the foundation of customization. You can keep the Roblox Tool/equip system and replace the UI, or create a complete custom item-data inventory in which many items are data records and only the currently equipped item is represented by a Tool.
+
+A common runtime layout looks like this:
+
+Players
+  PlayerName
+    Backpack                 Tools the player is carrying but not holding
+    StarterGear              templates copied into the runtime inventory on respawn
+    PlayerGui                the player's running ScreenGuis
+    PlayerScripts            running LocalScripts
+
+Workspace
+  PlayerName                 Character Model
+    Humanoid
+    HumanoidRootPart
+    Pickaxe                   Tool currently equipped, if any
+
+StarterPack                  authoring location for Tools everyone starts with
+ReplicatedStorage            shared templates, RemoteEvents, shared ModuleScripts
+ServerStorage                server-only Tool templates and private assets
+ServerScriptService          server-side inventory and validation code
+StarterGui                   ScreenGui templates copied into PlayerGui
+StarterPlayerScripts         LocalScripts started for each player
+
+============================================================
+2. CREATE A TOOL FROM NOTHING IN ROBLOX STUDIO
+============================================================
+
+STEP 1 — INSERT THE TOOL
+1. Open Roblox Studio and open your place.
+2. Open View > Explorer and View > Properties if they are not already visible.
+3. In Explorer, find Workspace. Click the plus button next to Workspace.
+4. Search for "Tool" and insert it.
+5. Rename it to something recognizable, such as "StonePickaxe".
+6. Build the model while it is in Workspace so you can see and position it.
+
+STEP 2 — BUILD A PHYSICAL TOOL
+A physical Tool normally needs one direct child BasePart named exactly Handle. The name is case-sensitive. The Handle is the attachment point Roblox uses to place the Tool in the character's hand.
+
+Example hierarchy:
+
+StonePickaxe (Tool)
+  Handle (Part)
+  PickHead (MeshPart)
+  SwingSound (Sound)
+  ToolClient (LocalScript)
+  Configuration (Folder)
+
+If the pickaxe is one MeshPart, rename that MeshPart to Handle. If it is made of several pieces, make a separate Handle part and connect the other pieces to it with WeldConstraints. Set every physical piece's Anchored property to false. An anchored Tool part can interfere with character movement and equipping. Usually set CanCollide to false for carried parts so the item does not snag on the character or environment. Set Massless to true on decorative pieces when appropriate, and weld them to the Handle.
+
+For a WeldConstraint:
+1. Select the Handle and insert a WeldConstraint under it.
+2. Set Part0 to Handle.
+3. Set Part1 to PickHead.
+4. Repeat for other parts, or use Studio's model welding tools.
+5. Test the Tool by moving it and checking that all pieces stay together.
+
+Do not create multiple direct child parts named Handle. Roblox can choose an unexpected one as the grip point.
+
+STEP 3 — NON-PHYSICAL TOOL
+A non-physical Tool can be an ability, menu action, scanner, or magic power that does not need a held model. Select the Tool and set RequiresHandle to false. You can still respond to Equipped and Activated events. This is useful for a teleport tool, a command device, or a tool that only displays a targeting interface.
+
+STEP 4 — SET IMPORTANT PROPERTIES
+Common Tool properties:
+
+Name: internal object name. Scripts can search for this, but do not use names as the only security check.
+RequiresHandle: true when a Handle is required; false for handleless tools.
+CanBeDropped: whether normal player drop behavior is allowed.
+Enabled: whether the Tool can activate. Set false during a cooldown or reload if appropriate.
+ManualActivationOnly: when true, normal mouse activation does not activate the Tool; scripts must call Tool:Activate().
+TextureId: image asset ID shown by Roblox's default inventory UI. Your custom UI can use this same property as an icon.
+ToolTip: default interface hover description.
+Grip: CFrame offset and rotation for the held item.
+
+CREATE A HANDLELESS TOOL WITH CODE
+You can also create a Tool with Instance.new(). For example, a server Script can create a scanner for a player after checking that the player earned it:
+
+local function createScanner(player)
+    local backpack = player:WaitForChild("Backpack")
+
+    local tool = Instance.new("Tool")
+    tool.Name = "Scanner"
+    tool.RequiresHandle = false
+    tool.CanBeDropped = false
+    tool.ToolTip = "Scan the object you are looking at"
+    tool:SetAttribute("ActionId", "Scan")
+    tool.TextureId = "rbxassetid://1234567890" -- replace with your image asset ID
+    tool.Parent = backpack
+
+    return tool
+end
+
+Do not literally use the example asset number unless it is a valid image you own or can use. For a physical Tool created by code, also create a BasePart named Handle, set Anchored=false, set CanCollide=false, parent it to the Tool, and weld any extra parts to it before parenting the Tool to Backpack. In production, grant Tools from a server Script using an approved item template rather than letting the client create powerful items.
+
+STEP 5 — TEST THE GRIP
+Move the Tool into StarterPack temporarily. Press Play. Equip it. If it is held backwards or too far from the hand, select the Tool and adjust Grip. Grip controls the offset and orientation of the Tool relative to the hand; it is not the same as moving the Handle in Workspace. Adjust a little at a time and test both R6 and R15 if your experience supports both rig types.
+
+============================================================
+3. HOW TO PUT TOOLS INTO A PLAYER'S INVENTORY
+============================================================
+
+STARTERPACK — EVERY PLAYER STARTS WITH THE TOOL
+Put a Tool inside StarterPack in Explorer. When a player spawns, Roblox copies that Tool into the player's runtime Backpack. This is the easiest way to make everyone start with a flashlight or starter weapon.
+
+STARTERGEAR — RESTORE A TOOL AFTER RESPAWN
+StarterGear is a per-player container used for Tools that should be copied into the player's Backpack after their character respawns. Use it when the player should keep an earned item through death, but remember this is not a permanent cross-session save. DataStoreService is needed for persistence between separate play sessions.
+
+SERVER GRANT — GIVE A TOOL AFTER A QUEST OR PURCHASE
+For earned items, keep a trusted template in ServerStorage and clone it into the player's Backpack from a server Script. This is safer than letting a LocalScript decide that the player earned an item.
+
+Example server code (Script in ServerScriptService):
+
+local ServerStorage = game:GetService("ServerStorage")
+
+local function giveTool(player, toolName)
+    local folder = ServerStorage:FindFirstChild("ToolTemplates")
+    if not folder then return false end
+
+    local template = folder:FindFirstChild(toolName)
+    if not template or not template:IsA("Tool") then
+        return false
+    end
+
+    local backpack = player:FindFirstChildOfClass("Backpack")
+    if not backpack then return false end
+
+    local copy = template:Clone()
+    copy.Parent = backpack
+    return true
+end
+
+-- Example call after the server has verified a quest reward:
+-- giveTool(player, "StonePickaxe")
+
+The template's name is an identifier, not proof of ownership. In a real game, the server should check the quest completion, purchase, reward, or pickup before calling giveTool.
+
+WORLD PICKUPS
+A Tool placed in Workspace can act as a collectible. Roblox's Tool system supports collectible Tools placed in the world. For a more complicated survival game, you may instead make a pickup Part/Model with a ProximityPrompt and a server handler. In that case, the server must check the player's distance and the pickup's availability before granting the Tool. Never trust a client saying "I picked this up" without checking the world state on the server.
+
+============================================================
+4. EXACTLY HOW ROBLOX MOVES A TOOL
+============================================================
+
+Unequipped state:
+player.Backpack contains the Tool.
+
+Equipped state:
+player.Character contains the Tool.
+
+Put-away action:
+Humanoid:UnequipTools() moves equipped Tools back to Backpack.
+
+Equip action:
+Humanoid:EquipTool(tool) equips the selected Tool. The Tool normally must belong to that player's inventory and have a valid Handle if RequiresHandle is true.
+
+Example:
+
+local character = player.Character
+local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+local backpack = player:FindFirstChildOfClass("Backpack")
+local tool = backpack and backpack:FindFirstChild("StonePickaxe")
+
+if humanoid and tool and tool:IsA("Tool") then
+    humanoid:EquipTool(tool)
+end
+
+To put it away:
+
+local character = player.Character
+local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+if humanoid then
+    humanoid:UnequipTools()
+end
+
+The currently equipped Tool normally appears as a child of Character, not as a child of Backpack. This matters when building a UI: scan BOTH containers. If you scan only Backpack, the selected item appears to disappear as soon as it is equipped.
+
+The Backpack is recreated after character death. Do not keep a permanent reference to an old Backpack and assume it remains valid forever. Reacquire it after respawn and listen for CharacterAdded.
+
+============================================================
+5. HOW TO DETECT IF A TOOL IS EQUIPPED, ACTIVATED, OR ACTUALLY IN USE
+============================================================
+
+These states are different. Do not mix them up.
+
+STATE A — THE PLAYER OWNS/CARRIES THE TOOL
+The Tool is a child of player.Backpack, or it is represented in the server's own inventory data. This means it is available, not necessarily held.
+
+STATE B — THE PLAYER HAS EQUIPPED THE TOOL
+The Tool is a child of player.Character. On the client, Tool.Equipped fires when selected and Tool.Unequipped fires when put away or switched. On the server, you can inspect the Tool's parent to verify the current equipped state. Example:
+
+local function isEquippedBy(player, tool)
+    local character = player.Character
+    return character ~= nil and tool.Parent == character
+end
+
+This check is important because the server should not trust a client just because it claims to have a sword or pickaxe equipped.
+
+STATE C — THE PLAYER STARTED ACTIVATING IT
+Tool.Activated fires on the player's client when the player activates the equipped Tool, commonly by clicking, tapping, or the relevant gamepad input. It is an input signal. It means the player attempted to activate the Tool; it does not automatically mean a hit landed, a block was mined, a shot hit, or an item was consumed.
+
+STATE D — THE PLAYER RELEASED THE ACTIVATION INPUT
+Tool.Deactivated fires when the activation input ends. This is useful for charge weapons, bows, mining beams, drills, and other actions that continue while the player holds the input. For a simple sword click, it may only be a quick press/release.
+
+IMPORTANT: Roblox documents Tool.Equipped, Unequipped, Activated, and Deactivated as client-side input events. Use a LocalScript to detect the input. Send a request to the server if the action changes shared game state. The server then independently checks that the Tool is actually equipped and that the requested action is permitted.
+
+A simple LocalScript inside a Tool:
+
+local tool = script.Parent
+
+local isEquipped = false
+local isActivating = false
+
+tool.Equipped:Connect(function()
+    isEquipped = true
+    print("EQUIPPED:", tool.Name)
+end)
+
+tool.Unequipped:Connect(function()
+    isEquipped = false
+    isActivating = false -- clear held state if the player switches away
+    print("UNEQUIPPED:", tool.Name)
+end)
+
+tool.Activated:Connect(function()
+    if not isEquipped or not tool.Enabled then return end
+    isActivating = true
+    print("ACTIVATED:", tool.Name)
+end)
+
+tool.Deactivated:Connect(function()
+    isActivating = false
+    print("ACTIVATION RELEASED:", tool.Name)
+end)
+
+This code tracks the local input state. `isActivating` is not proof that a server-side action succeeded. For example, a pickaxe may activate but hit empty air. Your code must decide what counts as a successful use.
+
+WHAT IF I NEED TO KNOW ON THE SERVER?
+The server can inspect `tool.Parent == player.Character` to know whether the Tool is currently equipped. To know whether an activation request occurred, a LocalScript sends a RemoteEvent. The server checks the request and records the accepted action itself. Do not expect the server to receive Tool.Activated as a normal server event.
+
+WHAT IF I NEED TO KNOW WHETHER THE PLAYER IS HOLDING THE BUTTON?
+Use Activated to record the start and Deactivated to record the release on the client. For a charge mechanic, send StartCharge and ReleaseCharge requests to the server. The server records its own start time and computes the elapsed time when it receives the release request. Clamp the charge to a maximum value. This avoids trusting a client-supplied number such as "I held it for 30 seconds."
+
+WHAT IF I NEED TO KNOW WHETHER THE TOOL HIT SOMETHING?
+Activation and collision are different. A Tool.Handle.Touched event only reports physical contact; it is not proof that the user deliberately swung the weapon. Touched can fire repeatedly and can be affected by physics. For weapons and mining, use a raycast or overlap hitbox and validate the result on the server. The server should verify range, line of sight, cooldown, target type, and permissions before applying damage or mining progress.
+
+============================================================
+6. CREATE A SIMPLE TOOL THAT REPORTS EQUIP AND USE
+============================================================
+
+Create a Tool named TestWrench with RequiresHandle=false. Put a LocalScript inside it. Paste:
+
+local tool = script.Parent
+
+local equipped = false
+
+tool.Equipped:Connect(function()
+    equipped = true
+    print("Wrench is now equipped")
+end)
+
+tool.Unequipped:Connect(function()
+    equipped = false
+    print("Wrench was put away")
+end)
+
+tool.Activated:Connect(function()
+    if not equipped then return end
+    print("Player clicked/tapped while holding the wrench")
+end)
+
+tool.Deactivated:Connect(function()
+    print("Player released the activation input")
+end)
+
+Move TestWrench into StarterPack and press Play. Open View > Output. Equip the wrench and click. You should see the messages. This isolates the event system before adding animations, damage, or a custom UI.
+
+For a physical wrench, set RequiresHandle=true and add a Handle BasePart. You can then add a swing animation, sound, and a server-validated interaction request.
+
+============================================================
+7. REPLACING THE DEFAULT ROBLOX INVENTORY UI
+============================================================
+
+The standard hotbar is part of Roblox CoreGui. The documented way to hide it is `StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)` from a LocalScript. This hides the default Backpack interface; it does not remove the player's Backpack instance or remove any Tools.
+
+There are two common approaches:
+
+APPROACH 1 — KEEP ROBLOX TOOL INVENTORY, REPLACE THE INTERFACE
+Use this if items are mostly individual Tools. Your custom ScreenGui reads the Tools from Backpack and Character, displays them, and calls Humanoid:EquipTool() when a player clicks a slot.
+
+APPROACH 2 — BUILD A FULL INVENTORY DATA SYSTEM
+Use this if your game needs stacks, weight, durability, crafting, item splitting, equipment slots, containers, trading, or items that are not Tools. Store item records in server-owned tables. The UI displays those records. Tool instances can be created only for the selected held item or for special interactive equipment.
+
+For a Roblox-like hotbar replacement, Approach 1 is a good first milestone.
+
+============================================================
+8. BUILD A CUSTOM HOTBAR AND BACKPACK WINDOW — STEP BY STEP
+============================================================
+
+STEP 1 — CREATE THE LOCAL SCRIPT
+1. In Explorer, expand StarterPlayer.
+2. Expand StarterPlayerScripts.
+3. Click the plus button and insert a LocalScript.
+4. Name it CustomInventoryClient.
+5. Paste the full code in the next section.
+
+A LocalScript runs for the individual player. It can read Players.LocalPlayer, create ScreenGui objects, read the local player's Backpack and Character, respond to keyboard input, and call Humanoid:EquipTool(). The server still controls whether the player is actually allowed to own items or perform actions.
+
+STEP 2 — WHAT THE SCRIPT CREATES
+The example creates:
+- A hotbar at the bottom center of the screen.
+- Nine numbered hotbar positions.
+- A BAG button that opens/closes a larger inventory window.
+- A scrolling grid that displays all Tools currently carried or equipped.
+- Item buttons that show the Tool's TextureId image when one is provided.
+- A selected highlight when the Tool is equipped.
+- Keyboard number keys 1 through 9 for quick selection.
+- Automatic refresh when Tools move into or out of Backpack or Character.
+
+STEP 3 — PASTE THIS FULL LOCAL SCRIPT
+
+-- CustomInventoryClient
+-- Place in StarterPlayer > StarterPlayerScripts as a LocalScript.
+
+local Players = game:GetService("Players")
+local StarterGui = game:GetService("StarterGui")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+
+-- Hide only the default Backpack interface. The actual Backpack remains.
+for attempt = 1, 10 do
+    local ok = pcall(function()
+        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+    end)
+    if ok then break end
+    task.wait(0.2)
+end
+
+local HOTBAR_SLOTS = 9
+local SLOT_WIDTH = 62
+local SLOT_HEIGHT = 62
+
+local slotTools = {}
+local watchedContainers = {}
+
+-- Create the main ScreenGui.
+local gui = Instance.new("ScreenGui")
+gui.Name = "CustomInventoryGui"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = false
+gui.DisplayOrder = 20
+gui.Parent = player:WaitForChild("PlayerGui")
+
+-- Main hotbar background.
+local hotbar = Instance.new("Frame")
+hotbar.Name = "Hotbar"
+hotbar.AnchorPoint = Vector2.new(0.5, 1)
+hotbar.Position = UDim2.new(0.5, 0, 1, -18)
+hotbar.Size = UDim2.fromOffset(HOTBAR_SLOTS * SLOT_WIDTH + 12, SLOT_HEIGHT + 12)
+hotbar.BackgroundColor3 = Color3.fromRGB(25, 27, 32)
+hotbar.BackgroundTransparency = 0.12
+hotbar.BorderSizePixel = 0
+hotbar.Parent = gui
+
+local hotbarCorner = Instance.new("UICorner")
+hotbarCorner.CornerRadius = UDim.new(0, 10)
+hotbarCorner.Parent = hotbar
+
+local hotbarPadding = Instance.new("UIPadding")
+hotbarPadding.PaddingLeft = UDim.new(0, 6)
+hotbarPadding.PaddingRight = UDim.new(0, 6)
+hotbarPadding.PaddingTop = UDim.new(0, 6)
+hotbarPadding.PaddingBottom = UDim.new(0, 6)
+hotbarPadding.Parent = hotbar
+
+local hotbarLayout = Instance.new("UIListLayout")
+hotbarLayout.FillDirection = Enum.FillDirection.Horizontal
+hotbarLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+hotbarLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+hotbarLayout.Padding = UDim.new(0, 4)
+hotbarLayout.Parent = hotbar
+
+-- Backpack window, hidden until BAG is pressed.
+local panel = Instance.new("Frame")
+panel.Name = "InventoryPanel"
+panel.AnchorPoint = Vector2.new(0.5, 0.5)
+panel.Position = UDim2.fromScale(0.5, 0.46)
+panel.Size = UDim2.fromOffset(430, 330)
+panel.BackgroundColor3 = Color3.fromRGB(28, 30, 36)
+panel.BorderSizePixel = 0
+panel.Visible = false
+panel.Parent = gui
+
+local panelCorner = Instance.new("UICorner")
+panelCorner.CornerRadius = UDim.new(0, 12)
+panelCorner.Parent = panel
+
+local title = Instance.new("TextLabel")
+title.Name = "Title"
+title.BackgroundTransparency = 1
+title.Position = UDim2.fromOffset(14, 8)
+title.Size = UDim2.new(1, -28, 0, 32)
+title.Font = Enum.Font.GothamBold
+title.Text = "INVENTORY"
+title.TextColor3 = Color3.fromRGB(245, 245, 245)
+title.TextSize = 18
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = panel
+
+local grid = Instance.new("ScrollingFrame")
+grid.Name = "ItemGrid"
+grid.Position = UDim2.fromOffset(12, 48)
+grid.Size = UDim2.new(1, -24, 1, -60)
+grid.BackgroundColor3 = Color3.fromRGB(18, 20, 25)
+grid.BorderSizePixel = 0
+grid.ScrollBarThickness = 6
+grid.CanvasSize = UDim2.new(0, 0, 0, 0)
+grid.AutomaticCanvasSize = Enum.AutomaticSize.Y
+grid.Parent = panel
+
+local gridPadding = Instance.new("UIPadding")
+gridPadding.PaddingLeft = UDim.new(0, 8)
+gridPadding.PaddingRight = UDim.new(0, 8)
+gridPadding.PaddingTop = UDim.new(0, 8)
+gridPadding.PaddingBottom = UDim.new(0, 8)
+gridPadding.Parent = grid
+
+local gridLayout = Instance.new("UIGridLayout")
+gridLayout.CellSize = UDim2.fromOffset(88, 82)
+gridLayout.CellPadding = UDim2.fromOffset(8, 8)
+gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+gridLayout.Parent = grid
+
+-- BAG button, located just above the hotbar's right edge.
+local bagButton = Instance.new("TextButton")
+bagButton.Name = "BagButton"
+bagButton.AnchorPoint = Vector2.new(1, 1)
+bagButton.Position = UDim2.new(1, -18, 1, -(SLOT_HEIGHT + 34))
+bagButton.Size = UDim2.fromOffset(76, 30)
+bagButton.BackgroundColor3 = Color3.fromRGB(52, 62, 80)
+bagButton.BorderSizePixel = 0
+bagButton.Font = Enum.Font.GothamBold
+bagButton.Text = "BAG [B]"
+bagButton.TextColor3 = Color3.new(1, 1, 1)
+bagButton.TextSize = 12
+bagButton.Parent = gui
+
+local function togglePanel()
+    panel.Visible = not panel.Visible
+end
+
+bagButton.Activated:Connect(togglePanel)
+
+-- Return the current Character and Backpack Tool objects without duplicates.
+local function getPlayerTools()
+    local result = {}
+    local seen = {}
+
+    local function collect(container)
+        if not container then return end
+        for _, child in ipairs(container:GetChildren()) do
+            if child:IsA("Tool") and not seen[child] then
+                seen[child] = true
+                table.insert(result, child)
+            end
+        end
+    end
+
+    collect(player:FindFirstChildOfClass("Backpack"))
+    collect(player.Character)
+
+    -- Optional HotbarOrder Attribute lets you control ordering.
+    table.sort(result, function(a, b)
+        local aOrder = a:GetAttribute("HotbarOrder")
+        local bOrder = b:GetAttribute("HotbarOrder")
+        if typeof(aOrder) ~= "number" then aOrder = math.huge end
+        if typeof(bOrder) ~= "number" then bOrder = math.huge end
+        if aOrder == bOrder then
+            return a.Name < b.Name
+        end
+        return aOrder < bOrder
+    end)
+
+    return result
+end
+
+local function equipOrUnequip(tool)
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid or humanoid.Health <= 0 then return end
+
+    local backpack = player:FindFirstChildOfClass("Backpack")
+    local belongsToPlayer = tool.Parent == backpack or tool.Parent == character
+    if not belongsToPlayer then return end
+
+    if tool.Parent == character then
+        humanoid:UnequipTools()
+    else
+        humanoid:EquipTool(tool)
+    end
+
+    -- Equipping reparents the Tool between Backpack and Character.
+    -- ChildAdded/ChildRemoved listeners below refresh the UI after that move.
+end
+
+local function makeItemButton(parent, tool, orderNumber, compact)
+    local width = compact and SLOT_WIDTH or 88
+    local height = compact and SLOT_HEIGHT or 82
+
+    local button = Instance.new("TextButton")
+    button.Name = "Item_" .. tool.Name
+    button.Size = UDim2.fromOffset(width, height)
+    button.BackgroundColor3 = Color3.fromRGB(53, 57, 67)
+    button.BorderSizePixel = 0
+    button.Text = ""
+    button.AutoButtonColor = true
+    button.LayoutOrder = orderNumber
+    button.Parent = parent
+
+    local selected = tool.Parent == player.Character
+    if selected then
+        button.BackgroundColor3 = Color3.fromRGB(72, 105, 75)
+    end
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 7)
+    corner.Parent = button
+
+    local keyLabel = Instance.new("TextLabel")
+    keyLabel.BackgroundTransparency = 1
+    keyLabel.Position = UDim2.fromOffset(4, 1)
+    keyLabel.Size = UDim2.fromOffset(20, 15)
+    keyLabel.Font = Enum.Font.GothamBold
+    keyLabel.Text = compact and tostring(orderNumber) or ""
+    keyLabel.TextColor3 = Color3.fromRGB(255, 230, 130)
+    keyLabel.TextSize = 11
+    keyLabel.Parent = button
+
+    local icon = Instance.new("ImageLabel")
+    icon.Name = "Icon"
+    icon.BackgroundTransparency = 1
+    icon.AnchorPoint = Vector2.new(0.5, 0)
+    icon.Position = UDim2.new(0.5, 0, 0, 5)
+    icon.Size = UDim2.new(1, -18, 0, compact and 32 or 43)
+    icon.ScaleType = Enum.ScaleType.Fit
+    icon.Image = tool.TextureId
+    icon.Parent = button
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Name = "ItemName"
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.AnchorPoint = Vector2.new(0.5, 1)
+    nameLabel.Position = UDim2.new(0.5, 0, 1, -3)
+    nameLabel.Size = UDim2.new(1, -6, 0, compact and 21 or 25)
+    nameLabel.Font = Enum.Font.Gotham
+    nameLabel.Text = tool.Name
+    nameLabel.TextColor3 = Color3.fromRGB(245, 245, 245)
+    nameLabel.TextSize = compact and 9 or 11
+    nameLabel.TextWrapped = true
+    nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    nameLabel.Parent = button
+
+    button.Activated:Connect(function()
+        equipOrUnequip(tool)
+    end)
+
+    return button
+end
+
+local refresh
+
+refresh = function()
+    table.clear(slotTools)
+
+    for _, child in ipairs(hotbar:GetChildren()) do
+        if child:IsA("GuiButton") then child:Destroy() end
+    end
+    for _, child in ipairs(grid:GetChildren()) do
+        if child:IsA("GuiButton") then child:Destroy() end
+    end
+
+    local tools = getPlayerTools()
+
+    for index, tool in ipairs(tools) do
+        if index <= HOTBAR_SLOTS then
+            slotTools[index] = tool
+            makeItemButton(hotbar, tool, index, true)
+        end
+        makeItemButton(grid, tool, index, false)
+    end
+end
+
+-- Listen to both containers. Equipping moves the Tool between them.
+local function watchContainer(container)
+    if not container or watchedContainers[container] then return end
+    watchedContainers[container] = true
+
+    container.ChildAdded:Connect(function(child)
+        if child:IsA("Tool") then task.defer(refresh) end
+    end)
+    container.ChildRemoved:Connect(function(child)
+        if child:IsA("Tool") then task.defer(refresh) end
+    end)
+end
+
+local function bindCharacter(character)
+    watchContainer(character)
+    task.defer(refresh)
+end
+
+player.ChildAdded:Connect(function(child)
+    if child:IsA("Backpack") then
+        watchContainer(child)
+        task.defer(refresh)
+    end
+end)
+
+player.CharacterAdded:Connect(bindCharacter)
+
+local initialBackpack = player:WaitForChild("Backpack")
+watchContainer(initialBackpack)
+if player.Character then
+    bindCharacter(player.Character)
+end
+
+-- Number-key selection. UI clicks/taps are handled by the buttons themselves.
+local keySlots = {
+    [Enum.KeyCode.One] = 1,
+    [Enum.KeyCode.Two] = 2,
+    [Enum.KeyCode.Three] = 3,
+    [Enum.KeyCode.Four] = 4,
+    [Enum.KeyCode.Five] = 5,
+    [Enum.KeyCode.Six] = 6,
+    [Enum.KeyCode.Seven] = 7,
+    [Enum.KeyCode.Eight] = 8,
+    [Enum.KeyCode.Nine] = 9,
+}
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+
+    if input.KeyCode == Enum.KeyCode.B then
+        togglePanel()
+        return
+    end
+
+    local slot = keySlots[input.KeyCode]
+    local tool = slot and slotTools[slot]
+    if tool then
+        equipOrUnequip(tool)
+    end
+end)
+
+refresh()
+
+STEP 4 — TEST THE UI
+1. Put at least two Tools in StarterPack.
+2. Press Play.
+3. The default Roblox hotbar should be hidden.
+4. Your hotbar should appear at the bottom.
+5. Press 1, 2, or another number to equip a slot.
+6. Click a hotbar slot to equip it. Click the selected Tool again to put it away.
+7. Press B or click BAG to open the grid.
+8. Click an item in the grid to equip it.
+9. Add a Tool to Backpack from a server reward and check that the UI refreshes.
+10. Die and respawn. Check that the new Character and Backpack are detected.
+
+NOTE ABOUT THIS FOUNDATION SCRIPT
+This example sorts by the optional numeric HotbarOrder Attribute and then by Tool.Name. To control the order, select a Tool in Studio, open Properties or use a setup Script, and set an Attribute named HotbarOrder to a number (for example 1 for the first slot, 2 for the second). For a production inventory, use server-owned slot assignments rather than relying on names. The sample gives the hotbar the first nine Tools; the grid displays all Tools. It does not yet support drag-and-drop, stack splitting, item categories, or permanent preferences.
+
+============================================================
+9. HOW TO CHANGE THE INVENTORY UI'S LOOK AND BEHAVIOR
+============================================================
+
+The UI is created from ordinary Roblox GUI Instances. You can change it visually in the script or create the ScreenGui by hand in StarterGui. Important objects:
+
+ScreenGui: the top-level interface container. ResetOnSpawn=false keeps it through character respawns.
+Frame: the background and layout region for the hotbar or inventory panel.
+TextButton: a clickable item slot, close button, category button, or action button.
+ImageButton: a clickable image slot.
+ImageLabel: the item icon.
+TextLabel: item name, quantity, slot number, durability, weight, or tooltip text.
+ScrollingFrame: a scrollable item grid.
+UIListLayout: automatically lines slots up horizontally or vertically.
+UIGridLayout: automatically arranges inventory cells into rows and columns.
+UICorner: rounds corners.
+UIStroke: adds an outline.
+UIPadding: controls internal spacing.
+UIScale: scales a whole UI group.
+UIAspectRatioConstraint: keeps a slot's proportions consistent.
+
+TO MOVE THE HOTBAR
+Change the hotbar AnchorPoint and Position. For example, bottom-center uses AnchorPoint (0.5, 1) and Position (0.5, 0, 1, -18). Top-center uses AnchorPoint (0.5, 0) and Position (0.5, 0, 0, 18). Left-side hotbars should use a vertical UIListLayout.
+
+TO CHANGE NUMBER OF SLOTS
+Change HOTBAR_SLOTS. Also change the key map if you want more than the nine number keys. If you add more than nine slots, consider mouse wheel, gamepad navigation, page buttons, or a second hotbar page.
+
+TO CHANGE SLOT SIZE
+Change SLOT_WIDTH and SLOT_HEIGHT. Then update the icon and label sizes. Use offsets for a stable pixel-sized hotbar or scale-based sizing for adaptive layouts.
+
+TO CHANGE COLORS
+Change the BackgroundColor3 values on hotbar, panel, buttons, and selected buttons. Make selected, hovered, disabled, and empty slots visibly different. Do not rely only on color: include a border, icon, text, or selection marker for accessibility.
+
+TO CHANGE ITEM ICONS
+Set Tool.TextureId to a valid image asset ID. The custom example reads tool.TextureId into an ImageLabel. If you need several visual layers, create an item-card Frame with separate icon, quantity, rarity border, durability bar, and lock icon.
+
+TO SHOW ITEM COUNTS
+The Tool system does not automatically represent stack quantities. Add an Attribute such as Quantity only for a simple prototype, or better, store quantity in the server inventory data. The UI can show a TextLabel such as "12" in the corner of the icon. The server must be the source of truth for how many exist.
+
+TO SHOW DURABILITY
+Store current durability and maximum durability on the server. Send updated display data to the client. Draw a thin Frame at the bottom of each slot; set its width to currentDurability / maxDurability. Do not let the client decide that a broken item is restored by editing a local label.
+
+TO OPEN/CLOSE A FULL INVENTORY
+Use a button or key to set `panel.Visible = not panel.Visible`. When the panel opens, you can show category tabs, a search box, weight meter, crafting controls, and item details. Close it on Escape, a close button, or a second press of the inventory key. Consider setting a game state that blocks combat input while the menu is open.
+
+TO ADD DRAG-AND-DROP
+A drag-and-drop inventory needs more than an item icon. Each cell needs a stable slot index and an item identity. On drag start, remember the source slot; while dragging, display a ghost icon; on release over another slot, request a move from the server. The server checks that both slots exist, the item is in the source slot, the destination accepts the item, weight limits are respected, and stack rules permit the move. Then it updates inventory data and replicates the new state. Do not just reparent a Tool based on the client's drag operation and assume that is secure.
+
+============================================================
+10. IMPORTANT INVENTORY AND TOOL COMMANDS — WHAT THEY ACTUALLY DO
+============================================================
+
+These are the basic Luau/Roblox commands used repeatedly in inventory scripts:
+
+game:GetService("Players") — gets the Players service.
+Players.LocalPlayer — gets the local player; only available to a LocalScript.
+player:WaitForChild("Backpack") — waits until the player's Backpack exists.
+player.Character — gets the current character Model; it can be nil during respawn.
+character:FindFirstChildOfClass("Humanoid") — finds the character's Humanoid.
+Instance.new("Tool") — creates a new Tool Instance.
+Instance.new("ScreenGui") — creates a GUI container.
+Instance.new("TextButton") — creates a clickable text button.
+Instance.new("ImageLabel") — creates a non-clickable image control.
+tool.Parent = backpack — puts the Tool into the player's Backpack.
+tool.Parent = character — makes it a child of Character, but normally use Humanoid:EquipTool() to equip correctly.
+tool:Clone() — makes a copy of the Tool and its descendants.
+instance:Destroy() — deletes the Instance and its descendants.
+container:GetChildren() — returns direct children, useful for listing Tools.
+container:FindFirstChild("StonePickaxe") — searches direct children by name.
+instance:IsA("Tool") — checks whether an Instance is a Tool.
+tool:GetAttribute("Damage") — reads an Attribute from the Tool.
+tool:SetAttribute("Damage", 12) — writes an Attribute. Important gameplay stats should be set/controlled by the server.
+humanoid:EquipTool(tool) — equips the Tool for that Humanoid.
+humanoid:UnequipTools() — puts equipped Tools away.
+StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false) — hides the default Backpack interface when called from a LocalScript.
+button.Activated:Connect(function() ... end) — responds to a UI button click/tap.
+tool.Activated:Connect(function() ... end) — detects Tool activation input on the client.
+tool.Unequipped:Connect(function() ... end) — responds when the player puts the Tool away.
+remote:FireServer(...) — sends a client request to the server.
+remote.OnServerEvent:Connect(function(player, ...) ... end) — receives that request; Roblox passes the sending Player as the first parameter.
+
+The difference between Parent and EquipTool is important. Changing Parent moves an Instance in the DataModel. Humanoid:EquipTool() asks the character's Humanoid to perform the Tool equip operation. Use the Humanoid method for normal equip selection. Use Parent changes for server-authorized granting/removing and for understanding where an item currently lives.
+
+============================================================
+11. MAKING TOOL BEHAVIOR CUSTOMIZABLE
+============================================================
+
+A Tool is the container and equip/activation entry point. Your scripts define what it actually does. You can build many behaviors from the same pattern:
+
+Pickaxe: on activation, play a swing animation; find a target with a raycast or short-lived hitbox; ask the server to mine; server checks material hardness, tool power, range, durability, and mining cooldown.
+
+Flashlight: on equip, show a local aiming reticle if needed; on activation, toggle a SpotLight; on unequip, turn the light off. Decide whether the light is local-only or visible to other players.
+
+Food: on activation, ask the server to consume one unit; server checks the player owns it and is not already eating; apply hunger restoration; remove one item; replicate updated inventory.
+
+Building tool: on equip, enter placement mode; show a transparent local preview; rotate with R; move preview based on a raycast; send the requested position and rotation to the server; server checks distance, ownership, collision, cost, and placement permissions before creating the real object.
+
+Bow: Activated records the start of charging; Deactivated releases the shot; server calculates accepted charge duration, checks ammunition and cooldown, then spawns or simulates the projectile.
+
+Use Attributes for configurable per-tool values, for example:
+
+Damage = 18
+Range = 12
+Cooldown = 0.8
+MiningPower = 3
+Durability = 120
+ChargeTime = 1.5
+ToolCategory = "Mining"
+ActionId = "Mine"
+
+Attributes let one reusable script handle multiple item variants. For example, a copper pickaxe and iron pickaxe can share the same behavior but have different MiningPower values. The server should read trusted values from its own Tool template or server inventory definition, not accept the client telling it the power is 9999.
+
+For larger projects, use a ModuleScript for shared definitions and a server-side service for the authoritative action. Avoid copying a different large Script into every Tool if dozens of Tools share the same pattern.
+
+============================================================
+12. DETECTING TOOL INPUT AND SENDING IT TO THE SERVER
+============================================================
+
+Create this hierarchy:
+
+ReplicatedStorage
+  Remotes (Folder)
+    ToolAction (RemoteEvent)
+
+ServerStorage
+  ToolTemplates (Folder)
+    TestWrench (Tool)
+
+StarterPack
+  TestWrench (Tool)   -- or give it through the server
+    ToolClient (LocalScript)
+
+ServerScriptService
+  ToolActionServer (Script)
+
+CLIENT SCRIPT — INSIDE THE TOOL
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local tool = script.Parent
+local toolAction = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ToolAction")
+
+local equipped = false
+
+tool.Equipped:Connect(function()
+    equipped = true
+end)
+
+tool.Unequipped:Connect(function()
+    equipped = false
+end)
+
+tool.Activated:Connect(function()
+    if not equipped or not tool.Enabled then return end
+    -- This is only a request. The server decides whether it is accepted.
+    toolAction:FireServer(tool, "Use")
+end)
+
+SERVER SCRIPT — IN SERVERSCRIPTSERVICE
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local toolAction = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ToolAction")
+local lastUse = {}
+local COOLDOWN = 0.7
+
+local function playerReallyHasToolEquipped(player, tool)
+    if typeof(tool) ~= "Instance" then return false end
+    if not tool:IsA("Tool") then return false end
+
+    local character = player.Character
+    if not character then return false end
+
+    -- An equipped Tool is parented to this player's Character.
+    if tool.Parent ~= character then return false end
+
+    return true
+end
+
+toolAction.OnServerEvent:Connect(function(player, tool, actionName)
+    -- Validate the exact types and allowed action.
+    if typeof(actionName) ~= "string" or actionName ~= "Use" then return end
+    if not playerReallyHasToolEquipped(player, tool) then return end
+
+    -- Do not let a client invent powerful Tool behavior by name alone.
+    if tool:GetAttribute("ActionId") ~= "TestWrench" then return end
+
+    local now = os.clock()
+    local previous = lastUse[player] or 0
+    if now - previous < COOLDOWN then return end
+    lastUse[player] = now
+
+    -- This is where the server performs the validated effect.
+    -- Example: check nearby repairable machine, ownership, and repair cost.
+    print(player.Name, "used", tool.Name)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    lastUse[player] = nil
+end)
+
+IMPORTANT SECURITY LESSONS
+- The client can request; the server decides.
+- Check that the Tool is an Instance, is actually a Tool, and is parented to that player's Character.
+- Check the ActionId or item definition against a trusted server-owned list.
+- Enforce cooldown on the server, not only in a LocalScript.
+- For a targeted action, the server must validate target type, distance, line of sight, ownership, and state.
+- Never accept client-supplied damage, money, durability, stack count, or reward as truth.
+- Rate-limit RemoteEvents. A malicious client can fire them repeatedly.
+
+============================================================
+13. CHARGE, HOLD, AND CONTINUOUS TOOL USE
+============================================================
+
+For a tool that works only while the button is held, connect both events:
+
+local tool = script.Parent
+local startedAt = nil
+
+tool.Activated:Connect(function()
+    startedAt = os.clock()
+    print("Started holding tool action")
+end)
+
+tool.Deactivated:Connect(function()
+    if not startedAt then return end
+    local elapsed = os.clock() - startedAt
+    startedAt = nil
+    print("Held for", elapsed, "seconds")
+end)
+
+tool.Unequipped:Connect(function()
+    startedAt = nil
+end)
+
+This local calculation is useful for animation or responsive visuals. For the actual game effect, send Start and Release requests to the server. The server stores its own timestamp on Start and computes the charge on Release. It should reject a release if no start exists, cap the time, check that the same Tool is still equipped, and enforce a maximum charge rate.
+
+For a held action, the server can keep its own active-use record. This is the pattern for a charged tool or a drill that is active only while the player holds the control.
+
+CLIENT (inside the Tool's LocalScript):
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local tool = script.Parent
+local remote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ToolAction")
+
+local equipped = false
+
+tool.Equipped:Connect(function()
+    equipped = true
+end)
+
+tool.Activated:Connect(function()
+    if equipped then
+        remote:FireServer(tool, "BeginHold")
+    end
+end)
+
+tool.Deactivated:Connect(function()
+    remote:FireServer(tool, "EndHold")
+end)
+
+tool.Unequipped:Connect(function()
+    equipped = false
+    remote:FireServer(tool, "CancelHold")
+end)
+
+SERVER (in a Script in ServerScriptService):
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local remote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ToolAction")
+local activeUse = {}
+
+local function validEquippedTool(player, tool)
+    return typeof(tool) == "Instance"
+        and tool:IsA("Tool")
+        and player.Character ~= nil
+        and tool.Parent == player.Character
+        and tool:GetAttribute("ActionId") == "ChargedTool"
+end
+
+remote.OnServerEvent:Connect(function(player, tool, command)
+    if not validEquippedTool(player, tool) then
+        activeUse[player] = nil
+        return
+    end
+
+    if command == "BeginHold" then
+        -- Do not reset the start time by repeatedly sending BeginHold.
+        if activeUse[player] == nil then
+            activeUse[player] = {
+                tool = tool,
+                startedAt = os.clock()
+            }
+        end
+
+    elseif command == "EndHold" then
+        local state = activeUse[player]
+        if not state or state.tool ~= tool then return end
+
+        local heldFor = math.clamp(os.clock() - state.startedAt, 0, 3)
+        activeUse[player] = nil
+
+        -- Convert heldFor to a server-approved power value here.
+        -- For example, a charge between 0 and 3 seconds.
+        print(player.Name, "held the tool for", heldFor, "seconds")
+
+    elseif command == "CancelHold" then
+        local state = activeUse[player]
+        if state and state.tool == tool then
+            activeUse[player] = nil
+        end
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    activeUse[player] = nil
+end)
+
+This is a simplified pattern. Add a server timeout so abandoned holds cannot remain active forever, and cancel the state on death/CharacterRemoving. A production drill should also have a server-controlled tick interval and must stop when the player moves out of range, changes Tools, loses permission, or the target becomes invalid.
+
+For a continuous drill or laser, do not run an infinite loop without a stop condition. Start a controlled task on Activated, stop it on Deactivated and Unequipped, and stop it if the Tool is destroyed, the character dies, the target becomes invalid, or the server denies the action. Use a cooldown or server tick rate so a client cannot generate unlimited work.
+
+============================================================
+14. FULL CUSTOM INVENTORY: ITEM DATA, NOT JUST TOOLS
+============================================================
+
+A Tool-only inventory is limited. Every item is generally an individual Tool instance. This becomes awkward when you want 300 stones in one stack, a weight limit, item condition, unique serial numbers, crafting ingredients, or items that can sit in containers without being held.
+
+A full inventory usually has three layers:
+
+ITEM DEFINITION — shared type information:
+itemId, displayName, icon, category, maxStack, unitWeight, maxDurability, allowedEquipmentSlot, description, toolTemplateName, baseStats.
+
+OWNED ITEM RECORD — one specific item or stack:
+uid, itemId, quantity, durability, quality, customName, upgradeData, containerId, slotIndex.
+
+PLAYER INVENTORY STATE — the actual collection owned by one player:
+containers, slot capacity, weight, hotbar assignment, equipment slots, currency, and any restrictions.
+
+Example item definition:
+
+IronPickaxe = {
+    displayName = "Iron Pickaxe",
+    category = "Tool",
+    maxStack = 1,
+    unitWeight = 3.5,
+    maxDurability = 240,
+    toolTemplateName = "IronPickaxe"
+}
+
+Example owned record:
+
+{
+    uid = "item_10482",
+    itemId = "IronPickaxe",
+    quantity = 1,
+    durability = 183,
+    containerId = "PlayerBackpack",
+    slotIndex = 4
+}
+
+The definition says what an Iron Pickaxe is. The owned record says which particular Iron Pickaxe the player owns and its current condition. Two pickaxes can have different durability, quality, name, or upgrades while sharing the same definition.
+
+STACKING RULES
+When adding 5 stones, search for a compatible existing stack that has room. Increase its quantity up to maxStack. If stones remain, create another stack in an empty slot. Do not stack unique tools with different durability unless your rules explicitly allow it. To split a stack, validate the source amount and destination slot on the server.
+
+WEIGHT RULES
+Calculate total weight from the server's item definitions and quantities: sum(unitWeight * quantity). Do not let the client send a total weight value. A backpack upgrade can increase maximum capacity. The UI simply displays the server's current weight and maximum weight.
+
+HOTBAR ASSIGNMENTS
+A hotbar slot should normally store an item UID or item slot reference, not just the text "Pickaxe". This matters if the player owns two pickaxes. When the user drags an item into slot 2, the client asks the server to assign that UID to hotbar slot 2. The server validates that the player owns it and then updates the saved hotbar mapping.
+
+EQUIPMENT SLOTS
+Armor, helmet, backpack, tool belt, boots, and hand slots can be separate container types with rules. For example, the helmet slot accepts HeadArmor only. The server checks category and requirements before equipping. The UI shows the slot but does not decide eligibility by itself.
+
+============================================================
+15. SAVE AND LOAD INVENTORY DATA
+============================================================
+
+Backpack Tools are runtime Instances. You cannot save a live Tool Instance, Part, connection, or Script directly in a DataStore. Save serializable data such as item IDs, quantities, durability, quality, upgrades, and slot assignments. When the player joins, load records on the server, validate them, and rebuild approved Tool Instances from server templates when needed.
+
+A robust save design should:
+- Save from server scripts, never trust the client to submit its complete inventory.
+- Use protected calls (pcall) around DataStore requests.
+- Save at controlled intervals and when the player leaves.
+- Avoid writing every time the player moves an item by one slot.
+- Handle failed saves, retries, and server shutdown.
+- Validate loaded data before spawning items; malformed or impossible records should not create arbitrary Instances.
+- Consider UpdateAsync for safe updates when concurrent writes are possible.
+
+For a small prototype, first make the inventory work in one server session. Add saving only after the server-side item data model is stable. For production, test in a separate published experience before using live player data.
+
+============================================================
+16. COMMON INVENTORY BUGS AND HOW TO FIND THEM
+============================================================
+
+ITEM VANISHES WHEN EQUIPPED
+Cause: the UI scans Backpack but not Character. Fix: scan both. Equipped Tools move into Character.
+
+DEFAULT ROBLOX HOTBAR STILL SHOWS
+Cause: the SetCoreGuiEnabled call is missing, runs in a server Script, or fails before CoreGui is ready. Fix: call it from a LocalScript and check Output. Wrap in pcall and retry after startup if needed.
+
+CUSTOM HOTBAR DOES NOT UPDATE
+Cause: the UI only reads the inventory once. Fix: listen for ChildAdded and ChildRemoved on Backpack and Character, and rebind when CharacterAdded fires.
+
+TOOL DOES NOT EQUIP
+Check that it is actually a Tool, that RequiresHandle matches the model, that the Handle is a direct child and spelled exactly, that physical parts are unanchored, and that the Tool belongs to the player's inventory.
+
+ACTIVATED DOES NOT FIRE
+Check that the Tool is equipped, Enabled is true, ManualActivationOnly is false if you expect normal click activation, and the LocalScript is actually running. Tool input events are for client-side detection.
+
+SERVER DOES NOT KNOW THE TOOL WAS USED
+A LocalScript detected the input, but no RemoteEvent was sent. Add the RemoteEvent and server handler. Then validate the Tool's parent and server rules.
+
+TOOL CAN BE USED THROUGH AN EXPLOIT
+The server trusts client damage, client target, or a client cooldown. Fix: server validates permission, equip state, cooldown, range, line of sight, costs, target, and the allowed Tool definition.
+
+CUSTOM UI SHOWS DUPLICATE TOOLS
+The Tool may be found in more than one source or the code has no seen-table. Scan Backpack and Character with a table of already-seen Instances.
+
+UI BUTTON CLICKS BUT NOTHING HAPPENS
+Check that the button uses Activated or MouseButton1Click, that it is visible and not covered by another Frame, and that the LocalScript is in a client-running location. Check Output for errors.
+
+============================================================
+17. RECOMMENDED ARCHITECTURE FOR A LARGE GAME
+============================================================
+
+For a game with many item types, use a clear division of responsibility:
+
+ReplicatedStorage
+  Remotes
+    InventoryRequest (RemoteEvent)
+    InventoryUpdate (RemoteEvent)
+    ToolAction (RemoteEvent)
+  Shared
+    ItemDefinitions (ModuleScript)
+    InventoryTypes (ModuleScript)
+
+ServerStorage
+  ToolTemplates
+    StonePickaxe (Tool)
+    IronPickaxe (Tool)
+    Flashlight (Tool)
+
+ServerScriptService
+  InventoryService (ModuleScript)
+  InventoryServer (Script)
+  ToolActionService (ModuleScript)
+  DataService (ModuleScript)
+
+StarterGui
+  CustomInventoryGui (ScreenGui)    -- or generated by a LocalScript
+
+StarterPlayer
+  StarterPlayerScripts
+    CustomInventoryClient (LocalScript)
+    ToolInputClient (LocalScript or tool-specific LocalScripts)
+
+InventoryService should own item records, stack operations, weight, slot validation, equipment rules, and grants. ToolActionService should own cooldowns and approved use actions. DataService should own loading and saving. The client should own the visual interface, local input detection, drag previews, animations, sounds, and responsive UI. The client requests; the server authorizes.
+
+A practical build sequence:
+1. Create one physical Tool and test Handle/grip.
+2. Add Equipped/Unequipped/Activated/Deactivated logs.
+3. Give it from StarterPack or a server grant function.
+4. Make one RemoteEvent and validate use on the server.
+5. Hide default Backpack UI.
+6. Build a nine-slot hotbar that scans Backpack and Character.
+7. Add a full grid and selection details.
+8. Add server-side item data and stable item UIDs.
+9. Add drag/drop, categories, weight, stacking, and equipment restrictions.
+10. Add DataStore persistence, then multiplayer stress/security tests.
+
+============================================================
+18. OFFICIAL ROBLOX DOCUMENTATION
+============================================================
+
+In-game Tools — create Tools, put them into inventories, collectible tools, and Tool events:
+https://create.roblox.com/docs/players/tools
+
+Tool class reference — properties, Activated, Deactivated, Equipped, Unequipped, Activate, Deactivate:
+https://create.roblox.com/docs/reference/engine/classes/Tool
+
+Disable default UI — SetCoreGuiEnabled and Enum.CoreGuiType.Backpack:
+https://create.roblox.com/docs/players/disable-ui
+
+Players and player containers — Backpack, StarterGear, PlayerGui, PlayerScripts, character lifecycle:
+https://create.roblox.com/docs/players
+
+Input system — keyboard, mouse, touch, gamepad, and preferred input:
+https://create.roblox.com/docs/input
+
+UserInputService reference:
+https://create.roblox.com/docs/reference/engine/classes/UserInputService
+
+Secure the client-server boundary — validate RemoteEvent requests, values, permissions, and rate limits:
+https://create.roblox.com/docs/scripting/security/client-server-boundary
+
+============================================================
+FINAL CORE IDEA
+============================================================
+
+A Roblox Tool is not the same thing as the inventory UI. A Tool is an equipable object. Backpack and Character are runtime containers. The standard hotbar is a replaceable CoreGui interface. Tool.Equipped tells the client that selection occurred; Tool.Activated tells the client that activation input began; Tool.Deactivated tells the client that activation input ended. Those input events do not prove that a server-side effect succeeded. A secure game sends a request to the server, and the server checks that the player truly has the correct Tool equipped and meets every gameplay rule.
+
+For a simple game, keep Tool instances and build a custom ScreenGui around them. For a large game with crafting, stacks, weight, durability, containers, and player-specific item layouts, create a server-authoritative inventory data model and let the custom UI display and manipulate that data through validated requests.

@@ -1,0 +1,68 @@
+# Render Blueprint — Blockyard game servers.
+# Deploys both WebSocket services as Docker web services.
+# See DEPLOY_RENDER.md for the full walkthrough (origins, ticket secret,
+# pointing the web app at these servers, free-tier caveats).
+#
+# One-time use: Render dashboard -> New + -> Blueprint -> pick this repo.
+# Render reads this file, prompts for the "sync: false" values, and creates
+# both services with public URLs like:
+#   https://blockyard-game-server-xxxx.onrender.com   (published games)
+#   https://blockyard-studio-sync-xxxx.onrender.com   (Team Create)
+#
+# 200-player target: game-server defaults to 200 players/session, 12Hz
+# nearby-delta snapshots, a 220-stud interest radius, and at most 64
+# rendered remote avatars per client. The free Render plan is for setup
+# and small tests only; run load tests and select adequate paid compute
+# before advertising a 200-player public capacity.
+
+services:
+  # ------------------------------------------------------------------
+  # Published-experience multiplayer server (mini-services/game-server)
+  # ------------------------------------------------------------------
+  - type: web
+    name: blockyard-game-server
+    runtime: docker
+    dockerfilePath: ./mini-services/game-server/Dockerfile
+    dockerContext: ./mini-services/game-server
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Comma-separated list of origins allowed to open the WebSocket,
+      # e.g. https://your-webapp.onrender.com (your site's origin, no slash).
+      # Leave empty only while testing.
+      - key: GAME_ALLOWED_ORIGINS
+        sync: false
+      # Shared HMAC secret. MUST be the same value as GAME_SERVER_TICKET_SECRET
+      # on the Next.js web app AND Studio sync service. Production rejects
+      # unsigned identities if this value is missing.
+      - key: GAME_SERVER_TICKET_SECRET
+        sync: false
+      # Hard cap for one shared game instance (2-200, default 200).
+      - key: GAME_SERVER_MAX_PLAYERS
+        value: "200"
+      # Network tuning: only nearby players are replicated to each browser.
+      - key: GAME_SERVER_SNAPSHOT_HZ
+        value: "12"
+      - key: GAME_SERVER_VIEW_RADIUS
+        value: "220"
+      - key: GAME_SERVER_MAX_VISIBLE_PLAYERS
+        value: "64"
+
+  # ------------------------------------------------------------------
+  # Studio Team Create sync server (mini-services/studio-sync)
+  # ------------------------------------------------------------------
+  - type: web
+    name: blockyard-studio-sync
+    runtime: docker
+    dockerfilePath: ./mini-services/studio-sync/Dockerfile
+    dockerContext: ./mini-services/studio-sync
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Origins allowed to open the Team Create WebSocket (same list as above).
+      - key: GAME_ALLOWED_ORIGINS
+        sync: false
+      - key: GAME_SERVER_TICKET_SECRET
+        sync: false

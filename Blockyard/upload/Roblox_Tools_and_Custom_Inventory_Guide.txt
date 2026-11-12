@@ -1,0 +1,248 @@
+ROBLOX TOOLS AND CUSTOM INVENTORY SYSTEMS
+A detailed, practical guide to Tools, hotbars, commands, customization, and multiplayer safety
+
+INTRODUCTION
+
+Roblox has two systems that are related but not identical: Tool instances and the Backpack interface. A Tool is an object a Humanoid can equip and activate. The Backpack is the player's runtime container for unequipped Tools. Roblox's default Backpack CoreGui is the visible hotbar and inventory window that displays those objects. Equipping a Tool moves it from Player.Backpack into the player's Character. Unequipping moves it back.
+
+This distinction matters when building a custom inventory. You can keep Roblox's Tool and equip mechanics while replacing only the interface, or you can create a separate item-data inventory for complete control over stacks, weight, equipment slots, crafting, durability, and containers. The second approach is usually better for a complex survival or simulator game.
+
+1. WHAT A ROBLOX TOOL CONTAINS
+
+A Tool is an Instance a character can hold or activate: a sword, pickaxe, flashlight, food item, bow, or building device. It can contain Parts, MeshParts, sounds, animations, scripts, and configuration objects.
+
+A typical Explorer layout is:
+
+MiningHammer (Tool)
+  Handle (Part or MeshPart)
+  Head (Part or MeshPart)
+  SwingSound (Sound)
+  ToolClient (LocalScript)
+  Configuration (Folder)
+
+For a physical item, add a BasePart named exactly Handle. Roblox uses it as the grip point. Weld or constrain the other physical pieces to the Handle so they move together. If the item does not need a physical handle, set RequiresHandle to false. A handleless scanner or ability tool can still be equipped and activated.
+
+Tool.Grip is a CFrame controlling the held object's offset and orientation. TextureId supplies its inventory icon, and ToolTip supplies hover text in the default UI.
+
+Important Tool properties:
+
+- RequiresHandle: whether a child part named Handle is required.
+- CanBeDropped: whether the normal Backspace drop behavior is allowed.
+- Enabled: turns activation on or off without deleting the item. Useful during cooldown, reload, stun, or repair.
+- ManualActivationOnly: lets the game control activation manually.
+- Grip: position and orientation of the held object.
+- ToolTip and TextureId: default-interface description and icon.
+
+2. HOW THE DEFAULT INVENTORY WORKS
+
+Each Player has a Backpack at runtime. Tools parented to Player.Backpack are normally shown in the default hotbar and inventory. When equipped, a Tool is parented to Player.Character and becomes part of the character model in Workspace. Other game systems can then detect which Tool is held. When unequipped, it returns to Backpack.
+
+StarterPack is an authoring container. Its Tools are copied into a player's Backpack when their Character spawns. StarterGear is used for Tools that should be restored after respawning. The runtime Backpack is recreated when a character dies, so it is not a permanent save file. A Tool lying in Workspace is a world object; it does not automatically become inventory just because it exists in the world. The server usually clones a trusted Tool template into Backpack when a player earns or picks it up.
+
+The default Backpack handles ordinary hotbar selection and equipping. It becomes limiting when you need grid layouts, stacks, weight limits, drag-and-drop, equipment slots, or detailed item descriptions.
+
+3. TOOL EVENTS: HOW ITEMS ACTIVATE
+
+Tool input events are detected on the player's device. Roblox documents that Tool events such as Equipped, Unequipped, Activated, and Deactivated fire in client-side LocalScripts. A common design uses a LocalScript for input and a server Script for validation and game-changing actions.
+
+- Equipped: show aiming UI, play an equip animation, or display controls.
+- Unequipped: stop sounds, hide the reticle, cancel charging, and clean up effects.
+- Activated: commonly fires on click or tap; begin a swing, shot, or interaction.
+- Deactivated: fires when a held activation ends, such as releasing a charged bow.
+- Activate() / Deactivate(): trigger or stop activation from code.
+
+Example LocalScript inside the Tool:
+
+local tool = script.Parent
+local remote = game:GetService("ReplicatedStorage"):WaitForChild("ToolRequest")
+
+tool.Equipped:Connect(function()
+    print("Equipped", tool.Name)
+end)
+
+tool.Unequipped:Connect(function()
+    print("Unequipped", tool.Name)
+end)
+
+tool.Activated:Connect(function()
+    if tool.Enabled then
+        remote:FireServer(tool, "Primary")
+    end
+end)
+
+This only sends a request. It does not decide damage, mine blocks, or grant rewards. The server must validate the request before changing the game.
+
+4. IMPORTANT INVENTORY COMMANDS AND API
+
+Roblox uses Luau, its Lua-based scripting language. These common commands are the building blocks of Tool and inventory code:
+
+- game:GetService("Players"): gets the Players service.
+- Players.LocalPlayer: gets the local player on the client only.
+- player.Backpack: accesses the player's runtime Tool container.
+- player.Character: accesses the player's current character model.
+- Instance.new("Tool"): creates a Tool.
+- object.Name = "Pickaxe": gives an Instance a name.
+- object.Parent = container: moves an Instance into a container. Parenting a Tool to Backpack makes it available.
+- tool:Clone(): copies a template Tool.
+- object:Destroy(): deletes an Instance and its descendants.
+- container:FindFirstChild("Pickaxe"): searches for a direct child by name.
+- container:GetChildren(): lists direct children.
+- object:IsA("Tool"): checks whether an Instance is a Tool.
+- signal:Connect(function() ... end): connects an event handler.
+- remote:FireServer(...): sends a client request to the server.
+- remote.OnServerEvent:Connect(function(player, ...) ... end): receives that request; Roblox supplies the sending Player first.
+- humanoid:EquipTool(tool): equips a Tool.
+- humanoid:UnequipTools(): returns equipped Tools to Backpack.
+- StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false): hides the default Backpack UI from a LocalScript.
+
+Destroy() deletes an item; UnequipTools() puts it away; Enabled = false disables it without removing it; ServerStorage hides it from players.
+
+5. GIVING AND EQUIPPING ITEMS
+
+Keep approved Tool templates in ServerStorage. When the player earns one, the server clones the approved template and parents the copy to the player's Backpack. This prevents a client from inventing a powerful Tool and pretending it was earned.
+
+Example server-side grant function:
+
+local ServerStorage = game:GetService("ServerStorage")
+
+local function giveTool(player, toolName)
+    local templates = ServerStorage:WaitForChild("ToolTemplates")
+    local template = templates:FindFirstChild(toolName)
+    if not template or not template:IsA("Tool") then return false end
+
+    local backpack = player:FindFirstChildOfClass("Backpack")
+    if not backpack then return false end
+
+    template:Clone().Parent = backpack
+    return true
+end
+
+To equip, find the Character's Humanoid and call humanoid:EquipTool(tool). To put it away, call humanoid:UnequipTools(). Before granting or collecting an item, validate ownership, distance, and duplicate rules.
+
+6. CUSTOM TOOL BEHAVIOR
+
+A Tool supplies the equip and activation framework; your scripts decide what those actions mean. A pickaxe can raycast from the player's view, play a swing animation, and request mining. A flashlight can toggle a SpotLight. A wrench can open a repair interface near a machine. A building tool can enter placement mode, show a transparent preview, rotate it, and request a placement from the server.
+
+Use Attributes or a Configuration folder for values that should vary between items. Examples: Damage, Range, Cooldown, Durability, MiningPower, FuelUse, ChargeTime, ToolCategory, and AllowedMaterial. A shared script can read tool:GetAttribute("MiningPower") so a stone pickaxe and iron pickaxe use the same behavior but have different strengths. Attributes make balancing and adding item variants much easier than copying and editing a separate script for every tool.
+
+A typical behavior sequence is:
+
+1. Equipped: show the tool interface and connect any special input.
+2. Activated: begin animation and send an action request.
+3. Server: confirm the Tool is owned and actually equipped.
+4. Server: check range, target, cooldown, durability, ammo, and permissions.
+5. Server: apply the effect and replicate the result.
+6. Unequipped: hide UI, stop effects, cancel charge, and clean up connections.
+
+For charge attacks, let the server cap charge time. Never trust client-supplied damage, item counts, or distance.
+
+7. SECONDARY INPUTS AND COMMANDS
+
+You can add right-click aiming, R to reload, F to toggle a light, Q to change modes, or buttons for mobile players. Design around actions rather than physical keys: call the action "ReloadWeapon," not "PressR." A player may rebind reload to a gamepad button or use a touch-screen button instead.
+
+Roblox's newer Input Action System is designed for cross-platform actions. Define an action such as Reload, Aim, or SecondaryUse and bind it to keyboard, mouse, gamepad, and touch inputs. ContextActionService is an older LocalScript API for binding actions only while a condition is active, such as while a particular Tool is equipped. Roblox's current documentation says its BindAction family is not recommended for new work and is planned for deprecation, so prefer the newer Input Action System for new projects when possible.
+
+Disable tool-specific input on unequip so actions do not remain active after switching items.
+
+8. BUILDING A CUSTOM INVENTORY INTERFACE
+
+You can hide the default Backpack UI and create your own ScreenGui. A LocalScript can call:
+
+local StarterGui = game:GetService("StarterGui")
+StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+
+This hides the standard display; it does not delete Backpack or create a replacement. Your interface must draw the items, handle clicks and drag-and-drop, and send requests to the server. The server still owns the real inventory state.
+
+A custom inventory can include a hotbar, backpack grid, equipment slots, item details, category filters, search, sorting, stack splitting, and Use/Equip/Drop/Transfer actions. Validate a move in inventory data before redrawing the UI; never treat the visible icon as the source of truth.
+
+Players can customize hotbar assignments, grid size, icon scale, sorting, and tooltip detail. Developers control slot count, stack limits, weight, and equipment rules. Save layout preferences separately from item ownership.
+
+9. DESIGNING A FLEXIBLE ITEM DATA MODEL
+
+For a large game, separate item definitions from individual owned items. A definition describes the type: ID, display name, icon, category, stack limit, weight, max durability, Tool template, and base stats. An owned record describes one actual copy: unique ID, item type, quantity, current durability, upgrades, custom name, and hotbar slot.
+
+Example definition:
+
+IronPickaxe = {
+    displayName = "Iron Pickaxe",
+    category = "Tool",
+    maxStack = 1,
+    weight = 3.5,
+    maxDurability = 240,
+    toolTemplate = "IronPickaxe"
+}
+
+Example owned record:
+
+{
+    uid = "item_10482",
+    itemId = "IronPickaxe",
+    quantity = 1,
+    durability = 183,
+    hotbarSlot = 2
+}
+
+Two pickaxes can now have different durability or upgrades, while materials stack without becoming Tools. Only the selected held item needs a Tool instance.
+
+10. MULTIPLAYER SECURITY
+
+RemoteEvents let a LocalScript send a one-way request to a server Script. Put the RemoteEvent somewhere both sides can access, commonly ReplicatedStorage. A client can request "use slot 3" or "swing pickaxe," but the server must decide whether the action is valid.
+
+Validate item ownership, equipped state, action, target, range, cooldown, costs, and permissions. Purchases need server-side price and currency checks; building needs placement and material checks; weapons need server-side damage, line-of-sight, and fire-rate checks. Rate-limit remote requests.
+
+The server is the source of truth for inventory counts, trades, purchases, damage, durability, and rewards. The client handles responsive input and visual presentation. Roblox specifically warns that every value sent across the client-server boundary must be validated because exploiters can modify their own client.
+
+11. SAVING INVENTORY BETWEEN SESSIONS
+
+Backpack contents are not automatically permanent. Use DataStoreService from server-side Scripts to save inventory data. Save serializable values such as strings, numbers, booleans, and tables—not live Tool Instances, Parts, or connections. Store item IDs, quantities, durability, upgrades, and hotbar positions. When a player rejoins, load and validate the data, then rebuild approved Tool instances from templates.
+
+Keep active inventory data in server memory. Save periodically and when players leave, with protected calls and error handling. Do not save every slot click; data stores have request limits. Test in a separate experience to protect live data.
+
+12. RECOMMENDED ARCHITECTURE AND BUILD ORDER
+
+A practical project layout is:
+
+ReplicatedStorage
+  Remotes (Folder)
+    InventoryRequest (RemoteEvent)
+    ToolRequest (RemoteEvent)
+  Shared
+    ItemDefinitions (ModuleScript)
+ServerStorage
+  ToolTemplates (Folder)
+    IronPickaxe (Tool)
+    Flashlight (Tool)
+ServerScriptService
+  InventoryService (ModuleScript)
+  InventoryServer (Script)
+  DataService (ModuleScript)
+StarterGui
+  InventoryGui (ScreenGui)
+StarterPlayer
+  StarterPlayerScripts
+    InventoryClient (LocalScript)
+
+Use StarterPack and the default Backpack for simple games; replace only the interface for a custom hotbar; use a server-owned item-data model for survival/crafting games.
+
+Build in stages: grant/equip one Tool, add validation, create a hotbar, add a grid, then add stacks and saving. Test respawn, reconnecting, full inventory, competing pickups, failed saves, latency, and malicious remote requests.
+
+FINAL TAKEAWAY
+
+A Roblox Tool is an equipable action object. Backpack is the runtime Tool container. The default hotbar is only the standard interface. For a deeply customizable inventory, create a separate server-authoritative item-data system, draw it with a custom ScreenGui, and create or equip Tool instances only when needed. This gives you control over slots, stacks, weight, equipment, crafting, durability, item behavior, and multiplayer security.
+
+OFFICIAL ROBLOX CREATOR HUB REFERENCES
+
+In-game tools: https://create.roblox.com/docs/players/tools
+Tool class: https://create.roblox.com/docs/reference/engine/classes/Tool
+Players, Backpack, StarterPack, StarterGear: https://create.roblox.com/docs/players
+Disable default UI: https://create.roblox.com/docs/players/disable-ui
+Remote events and callbacks: https://create.roblox.com/docs/scripting/events/remote
+Client-server security: https://create.roblox.com/docs/scripting/security/client-server-boundary
+Security tactics: https://create.roblox.com/docs/scripting/security/security-tactics
+Input and Input Action System: https://create.roblox.com/docs/input
+ContextActionService: https://create.roblox.com/docs/reference/engine/classes/ContextActionService
+Humanoid EquipTool / UnequipTools: https://create.roblox.com/docs/reference/engine/classes/Humanoid
+Save player data: https://create.roblox.com/docs/tutorials/use-case-tutorials/data-storage/save-player-data
+Data stores overview: https://create.roblox.com/docs/cloud-services/data-stores
+
+APIs can change; check the linked Creator Hub pages when implementing.

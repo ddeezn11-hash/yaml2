@@ -1,0 +1,952 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Blockyard — Multiplayer Three.js Baseplate</title>
+<style>
+  :root { color-scheme: dark; --panel: rgba(18,25,39,.88); --line: rgba(255,255,255,.14); --text:#f5f7fb; --muted:#aeb9ca; --accent:#6bd69b; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; width:100%; height:100%; overflow:hidden; background:#9bc7e7; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--text); }
+  #game { position:fixed; inset:0; }
+  canvas { display:block; width:100%; height:100%; outline:none; }
+  #topbar { position:fixed; top:14px; left:14px; right:14px; display:flex; align-items:flex-start; justify-content:space-between; pointer-events:none; gap:12px; }
+  .glass { background:var(--panel); border:1px solid var(--line); box-shadow:0 10px 35px rgba(0,0,0,.2); backdrop-filter:blur(12px); border-radius:14px; }
+  #brand { padding:10px 14px; display:flex; align-items:center; gap:10px; }
+  #brand-mark { width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#78e6a8,#36a7a0);display:grid;place-items:center;color:#10251c;font-weight:900; }
+  #brand strong { display:block;font-size:13px;letter-spacing:.12em;text-transform:uppercase; }
+  #brand small { display:block;color:var(--muted);font-size:11px;margin-top:1px; }
+  #help { padding:10px 13px; color:#d8e0ec; font-size:12px; line-height:1.65; text-align:right; }
+  #help b { color:#fff; font-weight:700; }
+  #view-toggle { pointer-events:auto; margin-top:7px; border:1px solid rgba(255,255,255,.2); border-radius:8px; padding:6px 9px; color:#f5f7fb; background:rgba(107,214,155,.18); font:700 10px system-ui,sans-serif; letter-spacing:.06em; cursor:pointer; }
+  #view-toggle:hover, #editor-toggle:hover { background:rgba(107,214,155,.32); }
+  #editor-toggle { pointer-events:auto; margin-top:7px; margin-left:6px; border:1px solid rgba(255,255,255,.2); border-radius:8px; padding:6px 9px; color:#f5f7fb; background:rgba(107,214,155,.18); font:700 10px system-ui,sans-serif; letter-spacing:.06em; cursor:pointer; }
+  #editor-panel { position:fixed; top:82px; left:50%; transform:translateX(-50%); padding:9px 13px; font-size:12px; font-weight:800; letter-spacing:.04em; text-align:center; pointer-events:none; display:none; white-space:nowrap; }
+  #editor-toolbar { position:fixed; top:126px; left:50%; transform:translateX(-50%); display:none; align-items:center; gap:7px; padding:8px; pointer-events:auto; white-space:nowrap; }
+  body.editor-mode #editor-panel, body.editor-mode #editor-toolbar { display:flex; }
+  .editor-btn { border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:8px 11px; color:#f5f7fb; background:rgba(255,255,255,.08); font:800 11px system-ui,sans-serif; letter-spacing:.04em; cursor:pointer; }
+  .editor-btn.active { color:#092116; background:#75dda4; border-color:#75dda4; }
+  .editor-btn.danger { background:rgba(226,83,83,.18); }
+  body.editor-mode #lock-overlay, body.editor-mode #crosshair { display:none; }
+  body.editor-mode #bottom-hint { opacity:0; }
+  #network-panel { position:fixed; top:76px; left:14px; z-index:4; display:flex; align-items:center; flex-wrap:wrap; gap:6px; padding:8px; max-width:min(620px,calc(100vw - 28px)); }
+  #network-panel input { min-width:0; height:31px; padding:6px 8px; color:#f5f7fb; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.15); border-radius:8px; outline:none; font:11px system-ui,sans-serif; }
+  #network-name { width:94px; } #network-room { width:88px; } #network-url { width:230px; }
+  #network-connect { height:31px; padding:0 10px; border:0; border-radius:8px; color:#092116; background:#75dda4; font:800 10px system-ui,sans-serif; cursor:pointer; }
+  #network-status { min-width:95px; color:#aeb9ca; font:800 9px system-ui,sans-serif; letter-spacing:.05em; }
+  #network-status.online { color:#75dda4; } #network-status.bad { color:#ff9b9b; }
+  @media (max-width:640px) { #network-panel { top:66px; left:12px; right:12px; } #network-url { flex:1; width:120px; } #network-name { width:78px; } #network-room { width:76px; } #network-status { min-width:75px; } }
+  #chat { position:fixed; left:16px; bottom:16px; width:min(360px,calc(100vw - 32px)); height:270px; display:flex; flex-direction:column; overflow:hidden; }
+  #chat-head { padding:10px 12px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; font-size:12px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+  #chat-status { color:var(--accent); font-size:10px; letter-spacing:.04em; }
+  #messages { flex:1; overflow:auto; padding:10px 12px; display:flex; flex-direction:column; gap:7px; scrollbar-width:thin; }
+  .msg { font-size:12px; line-height:1.4; color:#dce5f2; overflow-wrap:anywhere; }
+  .msg .who { color:#8fe3b3; font-weight:800; margin-right:6px; }
+  .msg.system { color:#aab7c9; font-style:italic; }
+  #chat-form { display:flex; gap:7px; padding:9px; border-top:1px solid var(--line); }
+  #chat-input { min-width:0; flex:1; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.13); border-radius:9px; padding:9px 10px; color:white; outline:none; font:inherit; font-size:12px; }
+  #chat-input:focus { border-color:rgba(107,214,155,.75); }
+  #send { border:0; border-radius:9px; padding:0 13px; color:#0b2418; background:#75dda4; font-weight:800; cursor:pointer; }
+  #send:hover { background:#93edb9; }
+  #bottom-hint { position:fixed; right:16px; bottom:16px; padding:9px 12px; font-size:11px; color:#e1e8f1; pointer-events:none; }
+  #crosshair { position:fixed; left:50%; top:50%; width:5px; height:5px; margin:-2px; border-radius:50%; background:rgba(255,255,255,.9); box-shadow:0 0 5px rgba(0,0,0,.7); pointer-events:none; opacity:.9; }
+  #lock-overlay { position:fixed; left:50%; top:calc(50% + 38px); transform:translate(-50%,-50%); padding:11px 16px; border-radius:12px; background:rgba(18,25,39,.84); border:1px solid rgba(255,255,255,.2); color:#fff; font-size:13px; font-weight:800; letter-spacing:.04em; text-align:center; pointer-events:none; box-shadow:0 8px 28px rgba(0,0,0,.25); }
+  #lock-overlay small { display:block; margin-top:4px; color:#b9c6d7; font-size:11px; font-weight:500; letter-spacing:0; }
+  body.locked #lock-overlay { display:none; }
+  body:not(.locked) #crosshair { opacity:.35; }
+  body.locked #bottom-hint { opacity:0; }
+  #toast { position:fixed; top:76px; left:50%; transform:translateX(-50%); opacity:0; transition:opacity .2s; padding:8px 12px; font-size:12px; pointer-events:none; }
+  #toast.show { opacity:1; }
+  @media (max-width:640px) {
+    #help { display:none; }
+    #chat { height:220px; width:min(330px,calc(100vw - 24px)); left:12px; bottom:12px; }
+    #bottom-hint { display:none; }
+    #brand { padding:8px 10px; }
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="game"></div>
+<div id="topbar">
+  <div id="brand" class="glass"><div id="brand-mark">B</div><div><strong>Blockyard</strong><small>Roblox-style baseplate</small></div></div>
+  <div id="help" class="glass"><b>W A S D</b> move &nbsp; <b>SPACE</b> jump<br><b>SHIFT</b> sprint &nbsp; <b>MOUSE</b> look &nbsp; <b>ESC</b> release<br><b>V</b> change view &nbsp; <b>E</b> editor
+    <br><button id="view-toggle" type="button">SWITCH TO FIRST PERSON</button><button id="editor-toggle" type="button">OPEN EDITOR</button>
+  </div>
+</div>
+<div id="network-panel" class="glass" aria-label="Multiplayer connection">
+  <input id="network-name" maxlength="20" value="Builder" aria-label="Player name" title="Player name" />
+  <input id="network-room" maxlength="32" value="baseplate" aria-label="Room name" title="Room name" />
+  <input id="network-url" spellcheck="false" aria-label="WebSocket server URL" title="WebSocket server URL" placeholder="ws://localhost:3000/ws or wss://..." />
+  <button id="network-connect" type="button">CONNECT</button>
+  <span id="network-status">● OFFLINE</span>
+</div>
+<div id="chat" class="glass">
+  <div id="chat-head"><span>Chat</span><span id="chat-status">● LOCAL SESSION</span></div>
+  <div id="messages" aria-live="polite">
+    <div class="msg system">Welcome to Blockyard. Connect to a WebSocket room to play with others.</div>
+    <div class="msg"><span class="who">Builder:</span>Hey! Welcome to the baseplate.</div>
+  </div>
+  <form id="chat-form"><input id="chat-input" autocomplete="off" maxlength="180" placeholder="Click here and type..." aria-label="Chat message" /><button id="send" type="submit">Send</button></form>
+</div>
+<div id="bottom-hint" class="glass">WASD move · Space jump · V view · E build · connect above for multiplayer</div>
+<div id="crosshair"></div>
+<div id="lock-overlay">CLICK TO PLAY<small>Mouse look · WASD move · ESC unlocks mouse</small></div>
+<div id="toast" class="glass"></div>
+<div id="editor-panel" class="glass">BUILD MODE · LEFT-DRAG PARTS · RIGHT-DRAG ORBITS · WHEEL ZOOMS</div>
+<div id="editor-toolbar" class="glass">
+  <button id="tool-select" class="editor-btn active" type="button">SELECT / MOVE</button>
+  <button id="tool-add" class="editor-btn" type="button">＋ ADD CUBE</button>
+  <button id="tool-rotate" class="editor-btn" type="button">ROTATE PART</button>
+  <button id="tool-delete" class="editor-btn danger" type="button">DELETE</button>
+  <button id="tool-done" class="editor-btn" type="button">DONE</button>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { PointerLockControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/PointerLockControls.js';
+
+const mount = document.getElementById('game');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9bc7e7);
+scene.fog = new THREE.Fog(0x9bc7e7, 75, 155);
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 300);
+scene.add(camera); // Camera is positioned at eye level in first-person.
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+mount.appendChild(renderer.domElement);
+
+// Lighting and a simple, bright outdoor sky.
+scene.add(new THREE.HemisphereLight(0xe9f6ff, 0x657b4d, 1.6));
+const sun = new THREE.DirectionalLight(0xfff2d7, 2.1);
+sun.position.set(-28, 48, 22);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -42; sun.shadow.camera.right = 42;
+sun.shadow.camera.top = 42; sun.shadow.camera.bottom = -42;
+sun.shadow.normalBias = 0.035;
+scene.add(sun);
+
+const mat = (color, roughness=0.85) => new THREE.MeshStandardMaterial({ color, roughness });
+const grassMat = mat(0x55a94f);
+const sideMat = mat(0x397b42);
+const trimMat = mat(0x66717d);
+const studMat = mat(0x6fbd62);
+const whiteMat = mat(0xf4f1e8);
+
+// A compact Roblox-inspired 48 x 48 studded property baseplate.
+const plotSize = 48;
+const ground = new THREE.Mesh(new THREE.BoxGeometry(plotSize, 0.6, plotSize), [sideMat,sideMat,grassMat,sideMat,sideMat,sideMat]);
+ground.position.y = -0.3;
+ground.receiveShadow = true;
+scene.add(ground);
+const border = new THREE.Mesh(new THREE.BoxGeometry(plotSize+0.7, 0.34, plotSize+0.7), trimMat);
+border.position.y = -0.61;
+border.receiveShadow = true;
+scene.add(border);
+
+// Instanced studs keep the baseplate detailed without creating hundreds of draw calls.
+const studGeo = new THREE.BoxGeometry(0.62, 0.12, 0.62);
+const studs = new THREE.InstancedMesh(studGeo, studMat, 19*19);
+studs.castShadow = true;
+studs.receiveShadow = true;
+const dummy = new THREE.Object3D();
+let studIndex = 0;
+for (let x=-22.5; x<=22.5; x+=2.5) {
+  for (let z=-22.5; z<=22.5; z+=2.5) {
+    dummy.position.set(x, 0.055, z);
+    dummy.updateMatrix();
+    studs.setMatrixAt(studIndex++, dummy.matrix);
+  }
+}
+studs.instanceMatrix.needsUpdate = true;
+scene.add(studs);
+
+// Corner markers make the small property boundary easy to read.
+const postGeo = new THREE.BoxGeometry(0.42, 1.2, 0.42);
+for (const x of [-23.3,23.3]) for (const z of [-23.3,23.3]) {
+  const post = new THREE.Mesh(postGeo, trimMat);
+  post.position.set(x,0.25,z); post.castShadow=true; post.receiveShadow=true; scene.add(post);
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(.58,.12,.58), whiteMat);
+  cap.position.set(x,.91,z); cap.castShadow=true; scene.add(cap);
+}
+
+// Decorative spawn pad.
+const spawnPad = new THREE.Mesh(new THREE.CylinderGeometry(2.0,2.0,.12,32), mat(0x2c8fdb));
+spawnPad.position.set(0,.14,0); spawnPad.receiveShadow=true; spawnPad.castShadow=true; scene.add(spawnPad);
+const spawnRing = new THREE.Mesh(new THREE.TorusGeometry(1.45,.06,8,48), mat(0xbbeaff));
+spawnRing.rotation.x=Math.PI/2; spawnRing.position.set(0,.22,0); scene.add(spawnRing);
+
+// Classic Roblox R6-style avatar: square head, broad 2x2-style torso,
+// one-piece rectangular arms and legs, and the familiar yellow/blue/green palette.
+const player = new THREE.Group();
+scene.add(player);
+const skin = mat(0xf5c542);       // classic yellow head and arms
+const shirt = mat(0x1769c2);      // classic blue torso
+const pants = mat(0x2b9b45);      // classic green legs
+const faceDark = mat(0x171717);
+function block(parent, geometry, material, position, cast=true) {
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.position.set(...position); mesh.castShadow=cast; mesh.receiveShadow=true; parent.add(mesh); return mesh;
+}
+
+// R6 proportions: legs 1.8 high, torso 1.8 high, head 1 high.
+// The parts meet edge-to-edge rather than looking like a small human-shaped toy.
+const torso = block(player,new THREE.BoxGeometry(1.8,1.8,.9),shirt,[0,2.72,0]);
+const head = block(player,new THREE.BoxGeometry(1,1,1),skin,[0,4.12,0]);
+
+// Simple, recognizable classic face on the front (-Z) of the cube head.
+const faceParts = [
+  block(player,new THREE.BoxGeometry(.115,.14,.025),faceDark,[-.22,4.22,-.513],false),
+  block(player,new THREE.BoxGeometry(.115,.14,.025),faceDark,[.22,4.22,-.513],false)
+];
+const smileCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(-.19,4.00,-.514), new THREE.Vector3(-.10,3.95,-.525),
+  new THREE.Vector3(0,3.94,-.529), new THREE.Vector3(.10,3.95,-.525),
+  new THREE.Vector3(.19,4.00,-.514)
+]);
+const smile = new THREE.Mesh(new THREE.TubeGeometry(smileCurve,16,.018,5,false),faceDark);
+smile.castShadow=false; player.add(smile);
+// The full head and face remain visible in third person. First-person hides
+// the complete avatar group, so no head geometry clips through the camera.
+
+// Shoulder pivots sit at the top corners of the torso, like classic R6 joints.
+const leftArm = new THREE.Group(); leftArm.position.set(-1.35,3.52,0); player.add(leftArm);
+block(leftArm,new THREE.BoxGeometry(.9,1.8,.9),skin,[0,-.9,0]);
+const rightArm = new THREE.Group(); rightArm.position.set(1.35,3.52,0); player.add(rightArm);
+block(rightArm,new THREE.BoxGeometry(.9,1.8,.9),skin,[0,-.9,0]);
+
+// Separate rectangular legs with a tiny center seam, as on the R6 rig.
+const leftLeg = new THREE.Group(); leftLeg.position.set(-.455,1.82,0); player.add(leftLeg);
+block(leftLeg,new THREE.BoxGeometry(.89,1.82,.9),pants,[0,-.91,0]);
+const rightLeg = new THREE.Group(); rightLeg.position.set(.455,1.82,0); player.add(rightLeg);
+block(rightLeg,new THREE.BoxGeometry(.89,1.82,.9),pants,[0,-.91,0]);
+
+// No camera-mounted arms: first-person is a clean headless camera view.
+// Floating nameplate.
+function makeNameplate(name, color='#ffffff') {
+  const canvas=document.createElement('canvas'); canvas.width=256; canvas.height=64;
+  const c=canvas.getContext('2d');
+  c.fillStyle='rgba(17,25,39,.84)'; c.beginPath(); c.roundRect(12,8,232,48,12); c.fill();
+  c.font='bold 25px system-ui'; c.textAlign='center'; c.textBaseline='middle'; c.fillStyle=color;
+  const safeName=String(name||'Builder').slice(0,20); c.fillText(safeName,128,32);
+  const texture=new THREE.CanvasTexture(canvas);
+  const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,transparent:true,depthTest:false}));
+  sprite.scale.set(3.1,.78,1); sprite.position.set(0,4.95,0);
+  return sprite;
+}
+const label = makeNameplate('Builder'); label.visible=false; player.add(label);
+function setLocalPlayerName(name) {
+  const old=label.material.map; label.material.map=makeNameplateTexture(name); label.material.needsUpdate=true; if(old) old.dispose();
+}
+function makeNameplateTexture(name) {
+  const canvas=document.createElement('canvas'); canvas.width=256; canvas.height=64;
+  const c=canvas.getContext('2d'); c.fillStyle='rgba(17,25,39,.84)'; c.beginPath(); c.roundRect(12,8,232,48,12); c.fill();
+  c.font='bold 25px system-ui'; c.textAlign='center'; c.textBaseline='middle'; c.fillStyle='#ffffff'; c.fillText(String(name||'Builder').slice(0,20),128,32);
+  return new THREE.CanvasTexture(canvas);
+}
+
+// Movement and camera state.
+const keys = Object.create(null);
+let velocityY = 0;
+player.position.y = 0.12;
+let grounded = true;
+let walkPhase = 0;
+let firstPerson = false; // Start in third-person so the full R6 avatar is visible.
+let editorMode = false;
+const THIRD_PERSON_DISTANCE = 6.5;
+const THIRD_PERSON_TARGET_HEIGHT = 2.55;
+const FIRST_PERSON_EYE_HEIGHT = 4.35;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+// PointerLockControls handles mouse-look in both camera modes. In third-person,
+// the camera orbits around a point above the avatar instead of sitting inside it.
+const controls = new PointerLockControls(camera, renderer.domElement);
+const cameraTarget = new THREE.Vector3();
+const cameraForward = new THREE.Vector3();
+const viewToggle = document.getElementById('view-toggle');
+const editorToggle = document.getElementById('editor-toggle');
+const editorPanel = document.getElementById('editor-panel');
+let editorSavedCameraQuaternion = null;
+
+// Build-mode parts are real scene objects, not a replacement player avatar.
+// The player remains the R6 character; placed cubes become solid platforms in play mode.
+const placedBlocks = [];
+const blockGeometry = new THREE.BoxGeometry(2, 2, 2);
+const blockMaterial = new THREE.MeshStandardMaterial({color:0x9aa7b6, roughness:0.72});
+const blockEdgeGeometry = new THREE.EdgesGeometry(blockGeometry);
+const blockEdgeMaterial = new THREE.LineBasicMaterial({color:0xffffff, transparent:true, opacity:0.95});
+let selectedBlock = null;
+let editorTool = 'select';
+let editorPointerMode = null;
+let editorDragPlane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+const editorRaycaster = new THREE.Raycaster();
+const editorPointer = new THREE.Vector2();
+const editorDragOffset = new THREE.Vector3();
+let editorLastPointer = {x:0,y:0};
+const editorTarget = new THREE.Vector3(0,0,0);
+let editorTheta = 0;
+let editorPhi = 0.78;
+let editorRadius = 37;
+const editorUp = new THREE.Vector3(0,1,0);
+
+const editorToolbar = document.getElementById('editor-toolbar');
+const selectToolButton = document.getElementById('tool-select');
+const addToolButton = document.getElementById('tool-add');
+const rotateButton = document.getElementById('tool-rotate');
+const deleteButton = document.getElementById('tool-delete');
+const doneButton = document.getElementById('tool-done');
+
+function setEditorTool(tool) {
+  editorTool = tool;
+  selectToolButton.classList.toggle('active', tool === 'select');
+  addToolButton.classList.toggle('active', tool === 'add');
+  renderer.domElement.style.cursor = tool === 'add' ? 'copy' : 'default';
+  updateEditorPanel();
+}
+function selectPlacedBlock(block) {
+  if (selectedBlock && selectedBlock.userData.outline) selectedBlock.userData.outline.visible = false;
+  if (selectedBlock && selectedBlock.userData.orientationArrow) selectedBlock.userData.orientationArrow.visible = false;
+  selectedBlock = block || null;
+  if (selectedBlock && selectedBlock.userData.outline) selectedBlock.userData.outline.visible = true;
+  if (selectedBlock && selectedBlock.userData.orientationArrow) selectedBlock.userData.orientationArrow.visible = true;
+  rotateButton.disabled = !selectedBlock;
+  deleteButton.disabled = !selectedBlock;
+  updateEditorPanel();
+}
+function makeNetworkId(prefix='id') {
+  return `${prefix}_${(globalThis.crypto && crypto.randomUUID) ? crypto.randomUUID() : Math.random().toString(36).slice(2)+Date.now().toString(36)}`;
+}
+function serializePlacedBlock(mesh) {
+  return {id:mesh.userData.netId, x:mesh.position.x, y:mesh.position.y, z:mesh.position.z, yaw:mesh.rotation.y, color:mesh.material.color.getHex()};
+}
+function createPlacedBlock(x, y, z, options={}) {
+  const mesh = new THREE.Mesh(blockGeometry, blockMaterial.clone());
+  mesh.position.set(x, y, z);
+  mesh.rotation.y = Number.isFinite(options.yaw) ? options.yaw : 0;
+  if (Number.isFinite(options.color)) mesh.material.color.setHex(options.color);
+  mesh.userData.netId = options.id || makeNetworkId('block');
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.userData.isPlacedBlock = true;
+  const outline = new THREE.LineSegments(blockEdgeGeometry, blockEdgeMaterial);
+  outline.visible = false;
+  outline.scale.setScalar(1.003);
+  mesh.add(outline);
+  mesh.userData.outline = outline;
+  // A tiny direction arrow makes rotation visible while editing a symmetric cube.
+  const orientationArrow = new THREE.ArrowHelper(new THREE.Vector3(0,0,-1), new THREE.Vector3(0,1.015,0), 0.72, 0xffd34d, 0.22, 0.13);
+  orientationArrow.visible = false;
+  mesh.add(orientationArrow);
+  mesh.userData.orientationArrow = orientationArrow;
+  scene.add(mesh);
+  placedBlocks.push(mesh);
+  if (options.select !== false) selectPlacedBlock(mesh);
+  if (options.send !== false) sendNetwork({type:'block:set', block:serializePlacedBlock(mesh)});
+  return mesh;
+}
+function upsertNetworkBlock(data) {
+  if (!data || typeof data.id !== 'string') return;
+  let mesh=placedBlocks.find(b=>b.userData.netId===data.id);
+  if (!mesh) return createPlacedBlock(data.x,data.y,data.z,{id:data.id,yaw:data.yaw,color:data.color,send:false,select:false});
+  mesh.position.set(data.x,data.y,data.z); mesh.rotation.y=data.yaw||0;
+  if (Number.isFinite(data.color)) mesh.material.color.setHex(data.color);
+  return mesh;
+}
+function commitPlacedBlock(mesh=selectedBlock) {
+  if (mesh) sendNetwork({type:'block:set', block:serializePlacedBlock(mesh)});
+}
+function removePlacedBlock(block, send=true) {
+  if (!block) return;
+  if (send) sendNetwork({type:'block:delete', id:block.userData.netId});
+  const index = placedBlocks.indexOf(block);
+  if (index >= 0) placedBlocks.splice(index, 1);
+  scene.remove(block);
+  block.material.dispose();
+  if (selectedBlock === block) selectPlacedBlock(null);
+}
+function updateEditorPanel() {
+  const count = placedBlocks.length;
+  const selected = selectedBlock ? ` · SELECTED ${selectedBlock.position.x.toFixed(0)}, ${selectedBlock.position.y.toFixed(0)}, ${selectedBlock.position.z.toFixed(0)}` : '';
+  editorPanel.textContent = `BUILD MODE · ${count} PART${count === 1 ? '' : 'S'} · ${editorTool.toUpperCase()}${selected} · ←/→ ROTATE · ↑/↓ HEIGHT · RIGHT-DRAG ORBIT · WHEEL ZOOM`;
+}
+function updateEditorCamera() {
+  const sinPhi = Math.sin(editorPhi);
+  camera.position.set(
+    editorTarget.x + editorRadius * sinPhi * Math.sin(editorTheta),
+    editorTarget.y + editorRadius * Math.cos(editorPhi),
+    editorTarget.z + editorRadius * sinPhi * Math.cos(editorTheta)
+  );
+  camera.lookAt(editorTarget);
+}
+function setViewMode(useFirstPerson, announce=true) {
+  firstPerson = !!useFirstPerson;
+  // In first person the whole avatar is hidden: no head, body, or arms.
+  player.visible = !firstPerson && !editorMode;
+  viewToggle.textContent = firstPerson ? 'SWITCH TO THIRD PERSON' : 'SWITCH TO FIRST PERSON';
+  if (announce) toast(firstPerson ? 'First-person view · avatar hidden' : 'Third-person view · R6 avatar visible');
+}
+function setEditorMode(enabled) {
+  enabled = !!enabled;
+  if (enabled === editorMode) return;
+  if (enabled) {
+    if (controls.isLocked) controls.unlock();
+    editorMode = true;
+    editorSavedCameraQuaternion = camera.quaternion.clone();
+    editorTarget.set(player.position.x, 0.8, player.position.z);
+    editorTheta = 0.72;
+    editorPhi = 0.82;
+    editorRadius = 34;
+    player.visible = false;
+    document.body.classList.add('editor-mode');
+    editorToggle.textContent = 'DONE';
+    setEditorTool('select');
+    selectPlacedBlock(null);
+    updateEditorCamera();
+    toast('Build mode · add cubes, drag parts, orbit with right mouse, zoom with wheel');
+  } else {
+    editorMode = false;
+    editorPointerMode = null;
+    document.body.classList.remove('editor-mode');
+    editorToggle.textContent = 'OPEN EDITOR';
+    renderer.domElement.style.cursor = 'default';
+    setViewMode(firstPerson, false);
+    // Restore the view direction from before build mode. The R6 player was never replaced.
+    if (editorSavedCameraQuaternion) camera.quaternion.copy(editorSavedCameraQuaternion);
+    editorSavedCameraQuaternion = null;
+    camera.getWorldDirection(cameraForward);
+    if (firstPerson) {
+      camera.position.set(player.position.x, player.position.y + FIRST_PERSON_EYE_HEIGHT, player.position.z);
+    } else {
+      cameraTarget.set(player.position.x, player.position.y + THIRD_PERSON_TARGET_HEIGHT, player.position.z);
+      camera.position.copy(cameraTarget).addScaledVector(cameraForward, -THIRD_PERSON_DISTANCE);
+    }
+    selectPlacedBlock(null);
+    toast('Build finished · placed cubes are solid in the game');
+  }
+}
+viewToggle.addEventListener('click', () => { if (!editorMode) setViewMode(!firstPerson); });
+editorToggle.addEventListener('click', () => setEditorMode(!editorMode));
+selectToolButton.addEventListener('click', () => setEditorTool('select'));
+addToolButton.addEventListener('click', () => setEditorTool(editorTool === 'add' ? 'select' : 'add'));
+rotateButton.addEventListener('click', () => {
+  if (!selectedBlock) return;
+  selectedBlock.rotation.y += Math.PI / 4;
+  updateEditorPanel(); commitPlacedBlock();
+});
+deleteButton.addEventListener('click', () => removePlacedBlock(selectedBlock));
+doneButton.addEventListener('click', () => setEditorMode(false));
+
+function setEditorPointer(event) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  editorPointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  editorPointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  editorRaycaster.setFromCamera(editorPointer, camera);
+}
+function findEditorSurface(event) {
+  setEditorPointer(event);
+  // Only the baseplate and placed parts can be build surfaces; cosmetic studs are ignored.
+  const hits = editorRaycaster.intersectObjects([ground, ...placedBlocks], false);
+  for (const hit of hits) {
+    const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
+    if (normal.y > 0.55) return hit;
+  }
+  return null;
+}
+function findEditorBlock(event) {
+  setEditorPointer(event);
+  const hits = editorRaycaster.intersectObjects(placedBlocks, false);
+  return hits.length ? hits[0] : null;
+}
+function snapBuildCoordinate(value) {
+  return clamp(Math.round(value / 2) * 2, -22, 22);
+}
+function onEditorPointerDown(event) {
+  if (!editorMode) return;
+  if (event.button === 2) {
+    event.preventDefault();
+    editorPointerMode = 'orbit';
+    editorLastPointer = {x:event.clientX, y:event.clientY};
+    return;
+  }
+  if (event.button === 1) {
+    event.preventDefault();
+    editorPointerMode = 'pan';
+    editorLastPointer = {x:event.clientX, y:event.clientY};
+    return;
+  }
+  if (event.button !== 0) return;
+  event.preventDefault();
+  if (editorTool === 'add') {
+    const hit = findEditorSurface(event);
+    if (!hit) return;
+    const x = snapBuildCoordinate(hit.point.x);
+    const z = snapBuildCoordinate(hit.point.z);
+    const surfaceY = hit.object === ground ? 0 : hit.object.position.y + 1;
+    createPlacedBlock(x, surfaceY + 1, z);
+    setEditorTool('select');
+    toast('Cube placed · drag it to reposition');
+    return;
+  }
+  const hit = findEditorBlock(event);
+  if (!hit) { selectPlacedBlock(null); return; }
+  const block = hit.object;
+  selectPlacedBlock(block);
+  editorPointerMode = 'drag';
+  editorDragPlane.set(editorUp, -block.position.y);
+  const point = new THREE.Vector3();
+  if (editorRaycaster.ray.intersectPlane(editorDragPlane, point)) editorDragOffset.set(block.position.x-point.x, 0, block.position.z-point.z);
+  else editorDragOffset.set(0,0,0);
+  renderer.domElement.style.cursor = 'grabbing';
+}
+function onEditorPointerMove(event) {
+  if (!editorMode || !editorPointerMode) return;
+  const dx = event.clientX - editorLastPointer.x;
+  const dy = event.clientY - editorLastPointer.y;
+  editorLastPointer = {x:event.clientX, y:event.clientY};
+  if (editorPointerMode === 'orbit') {
+    editorTheta -= dx * 0.006;
+    editorPhi = clamp(editorPhi + dy * 0.006, 0.12, 1.48);
+    updateEditorCamera();
+  } else if (editorPointerMode === 'pan') {
+    camera.updateMatrixWorld();
+    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+    const forward = new THREE.Vector3();
+    camera.getWorldDirection(forward); forward.y = 0; forward.normalize();
+    const scale = editorRadius * 0.0018;
+    editorTarget.addScaledVector(right, -dx * scale);
+    editorTarget.addScaledVector(forward, dy * scale);
+    editorTarget.x = clamp(editorTarget.x, -22, 22);
+    editorTarget.z = clamp(editorTarget.z, -22, 22);
+    updateEditorCamera();
+  } else if (editorPointerMode === 'drag' && selectedBlock) {
+    setEditorPointer(event);
+    const point = new THREE.Vector3();
+    if (editorRaycaster.ray.intersectPlane(editorDragPlane, point)) {
+      selectedBlock.position.x = snapBuildCoordinate(point.x + editorDragOffset.x);
+      selectedBlock.position.z = snapBuildCoordinate(point.z + editorDragOffset.z);
+      updateEditorPanel();
+    }
+  }
+}
+function onEditorPointerUp() {
+  if (!editorPointerMode) return;
+  if (editorPointerMode === 'drag' && selectedBlock) commitPlacedBlock(selectedBlock);
+  editorPointerMode = null;
+  renderer.domElement.style.cursor = editorMode && editorTool === 'add' ? 'copy' : 'default';
+}
+renderer.domElement.addEventListener('pointerdown', onEditorPointerDown);
+window.addEventListener('pointermove', onEditorPointerMove);
+window.addEventListener('pointerup', onEditorPointerUp);
+renderer.domElement.addEventListener('contextmenu', event => { if (editorMode) event.preventDefault(); });
+renderer.domElement.addEventListener('wheel', event => {
+  if (!editorMode) return;
+  event.preventDefault();
+  editorRadius = clamp(editorRadius * Math.exp(event.deltaY * 0.001), 7, 85);
+  updateEditorCamera();
+}, {passive:false});
+controls.minPolarAngle = 0.08;
+controls.maxPolarAngle = Math.PI - 0.08;
+renderer.domElement.addEventListener('click', () => {
+  if (!editorMode && !controls.isLocked) controls.lock();
+});
+controls.addEventListener('lock', () => {
+  document.body.classList.add('locked');
+  toast('Mouse captured · press ESC to release');
+});
+controls.addEventListener('unlock', () => {
+  document.body.classList.remove('locked');
+  for (const k in keys) keys[k] = false;
+});
+
+window.addEventListener('keydown',e=>{
+  if (document.activeElement===chatInput) return;
+  if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+  if (e.code==='KeyE' && !e.repeat) { setEditorMode(!editorMode); return; }
+  if (editorMode) {
+    if (e.repeat) return;
+    if (selectedBlock && e.code === 'ArrowLeft') {
+      selectedBlock.rotation.y -= Math.PI / 4;
+      updateEditorPanel(); commitPlacedBlock();
+      return;
+    }
+    if (selectedBlock && e.code === 'ArrowRight') {
+      selectedBlock.rotation.y += Math.PI / 4;
+      updateEditorPanel(); commitPlacedBlock();
+      return;
+    }
+    if (selectedBlock && e.code === 'ArrowUp') {
+      // Move one cube-height upward (cubes are 2 × 2 × 2).
+      selectedBlock.position.y = Math.min(101, selectedBlock.position.y + 2);
+      updateEditorPanel(); commitPlacedBlock();
+      return;
+    }
+    if (selectedBlock && e.code === 'ArrowDown') {
+      // Keep the bottom of the cube on or above the baseplate.
+      selectedBlock.position.y = Math.max(1, selectedBlock.position.y - 2);
+      updateEditorPanel(); commitPlacedBlock();
+      return;
+    }
+    if ((e.code === 'KeyR' || e.code === 'KeyT') && selectedBlock) { selectedBlock.rotation.y += Math.PI/4; updateEditorPanel(); commitPlacedBlock(); }
+    if (e.code === 'Delete' || e.code === 'Backspace') removePlacedBlock(selectedBlock);
+    if (e.code === 'Escape') setEditorMode(false);
+    return;
+  }
+  if (e.code==='KeyV' && !e.repeat) { setViewMode(!firstPerson); return; }
+  keys[e.code]=true;
+  if (e.code==='Space' && grounded) { velocityY=10.8; grounded=false; }
+  if (e.code==='KeyR') respawn();
+});
+window.addEventListener('keyup',e=>{keys[e.code]=false;});
+window.addEventListener('blur',()=>{for(const k in keys) keys[k]=false;});
+
+// Solid player-vs-block collision. The player uses a small oriented box that
+// matches the R6 torso footprint; every placed cube uses its actual Y rotation.
+// This is a 2D OBB SAT test, so rotated cubes do not have invisible square corners.
+const PLAYER_HALF_WIDTH = 0.9;
+const PLAYER_HALF_DEPTH = 0.55;
+const PLAYER_COLLISION_HEIGHT = 4.62;
+const GROUND_FOOT_HEIGHT = 0.12; // top of the baseplate studs
+const COLLISION_SKIN = 0.025;
+
+function overlapsPlayerBlockXZ(x, z, block, playerYaw = player.rotation.y) {
+  const pc = Math.cos(playerYaw), ps = Math.sin(playerYaw);
+  const bc = Math.cos(block.rotation.y), bs = Math.sin(block.rotation.y);
+  // Local X/Z axes transformed into world space for each oriented box.
+  const pX = [pc, -ps], pZ = [ps, pc];
+  const bX = [bc, -bs], bZ = [bs, bc];
+  const dx = x - block.position.x;
+  const dz = z - block.position.z;
+  const axes = [pX, pZ, bX, bZ];
+  for (const axis of axes) {
+    const centerDistance = Math.abs(dx * axis[0] + dz * axis[1]);
+    const playerRadius = PLAYER_HALF_WIDTH * Math.abs(axis[0] * pX[0] + axis[1] * pX[1]) +
+                         PLAYER_HALF_DEPTH * Math.abs(axis[0] * pZ[0] + axis[1] * pZ[1]);
+    const blockRadius = Math.abs(axis[0] * bX[0] + axis[1] * bX[1]) +
+                        Math.abs(axis[0] * bZ[0] + axis[1] * bZ[1]);
+    if (centerDistance >= playerRadius + blockRadius - COLLISION_SKIN) return false;
+  }
+  return true;
+}
+
+function collidesWithPlacedBlock(x, z, playerBottom, playerYaw = player.rotation.y) {
+  const playerTop = playerBottom + PLAYER_COLLISION_HEIGHT;
+  for (const block of placedBlocks) {
+    const blockBottom = block.position.y - 1;
+    const blockTop = block.position.y + 1;
+    const overlapsY = playerBottom < blockTop - COLLISION_SKIN && playerTop > blockBottom + COLLISION_SKIN;
+    if (overlapsY && overlapsPlayerBlockXZ(x, z, block, playerYaw)) return true;
+  }
+  return false;
+}
+
+// Move in small swept steps so fast movement cannot tunnel through a thin edge.
+// Axis separation allows the character to slide along cube walls and corners.
+function movePlayerAxis(axis, distance) {
+  if (!distance) return;
+  const steps = Math.max(1, Math.ceil(Math.abs(distance) / 0.16));
+  const increment = distance / steps;
+  for (let i = 0; i < steps; i++) {
+    const nextX = axis === 'x' ? player.position.x + increment : player.position.x;
+    const nextZ = axis === 'z' ? player.position.z + increment : player.position.z;
+    if (collidesWithPlacedBlock(nextX, nextZ, player.position.y)) break;
+    player.position[axis] = clamp(player.position[axis] + increment, -22.1, 22.1);
+  }
+}
+function respawn(){ player.position.set(0,GROUND_FOOT_HEIGHT,0); velocityY=0; grounded=true; toast('Respawned at the spawn pad'); }
+function toast(message){ const el=document.getElementById('toast'); el.textContent=message; el.classList.add('show'); clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.classList.remove('show'),1700); }
+
+// -------------------- MULTIPLAYER CLIENT --------------------
+// Clients connect to the WebSocket server packaged with this game. The server
+// owns room membership, chat, and the shared placed-block list. Player movement
+// is relayed at 15 Hz with bounds/rate validation in server.js.
+const networkNameInput=document.getElementById('network-name');
+const networkRoomInput=document.getElementById('network-room');
+const networkUrlInput=document.getElementById('network-url');
+const networkConnectButton=document.getElementById('network-connect');
+const networkStatus=document.getElementById('network-status');
+const chatStatus=document.getElementById('chat-status');
+const remotePlayers=new Map();
+let networkSocket=null, networkWanted=false, networkReconnectTimer=null, networkReconnectDelay=1000;
+let networkStateTimer=0, networkPlayerId=null, connectedRoom='baseplate';
+const MAX_REMOTE_PLAYERS=24;
+const defaultSocketUrl=()=> location.protocol==='https:' ? `wss://${location.host}/ws` : (location.hostname ? `ws://${location.host}/ws` : 'ws://localhost:3000/ws');
+networkUrlInput.value=defaultSocketUrl();
+function networkOpen(){ return networkSocket && networkSocket.readyState===WebSocket.OPEN; }
+function setNetworkStatus(text, state='') {
+  networkStatus.textContent='● '+text; networkStatus.classList.toggle('online',state==='online'); networkStatus.classList.toggle('bad',state==='bad');
+  chatStatus.textContent=state==='online' ? `● ONLINE · ${remotePlayers.size+1} PLAYERS` : (state==='bad' ? '● DISCONNECTED' : '● LOCAL SESSION');
+}
+function sendNetwork(packet) {
+  if (!networkOpen()) return false;
+  try { networkSocket.send(JSON.stringify(packet)); return true; } catch (err) { console.warn('WebSocket send failed',err); return false; }
+}
+function clearRemotePlayers(){
+  for(const entry of remotePlayers.values()){ scene.remove(entry.mesh); entry.mesh.traverse(o=>{if(o.isMesh||o.isSprite){if(o.geometry)o.geometry.dispose(); if(o.material){if(Array.isArray(o.material))o.material.forEach(m=>m.dispose());else o.material.dispose();}}}); }
+  remotePlayers.clear();
+}
+function createRemoteAvatar(info){
+  if(!info || !info.id || remotePlayers.has(info.id) || remotePlayers.size>=MAX_REMOTE_PLAYERS) return;
+  const group=new THREE.Group();
+  const skinRemote=mat(0xf3c54a), shirtRemote=mat(info.color || 0xd85a48), pantsRemote=mat(0x2b9b45), faceRemote=mat(0x171717);
+  const part=(geo,material,pos)=>{const m=new THREE.Mesh(geo,material);m.position.set(...pos);m.castShadow=true;m.receiveShadow=true;group.add(m);return m;};
+  part(new THREE.BoxGeometry(1.8,1.8,.9),shirtRemote,[0,2.72,0]);
+  part(new THREE.BoxGeometry(1,1,1),skinRemote,[0,4.12,0]);
+  part(new THREE.BoxGeometry(.115,.14,.025),faceRemote,[-.22,4.22,-.513]);
+  part(new THREE.BoxGeometry(.115,.14,.025),faceRemote,[.22,4.22,-.513]);
+  const smileCurveRemote=new THREE.CatmullRomCurve3([new THREE.Vector3(-.19,4.00,-.514),new THREE.Vector3(-.10,3.95,-.525),new THREE.Vector3(0,3.94,-.529),new THREE.Vector3(.10,3.95,-.525),new THREE.Vector3(.19,4.00,-.514)]);
+  const smileRemote=new THREE.Mesh(new THREE.TubeGeometry(smileCurveRemote,16,.018,5,false),faceRemote);group.add(smileRemote);
+  const leftRemote=new THREE.Group();leftRemote.position.set(-1.35,3.52,0);group.add(leftRemote);partRemote(leftRemote);
+  const rightRemote=new THREE.Group();rightRemote.position.set(1.35,3.52,0);group.add(rightRemote);partRemote(rightRemote);
+  const leftLegRemote=new THREE.Group();leftLegRemote.position.set(-.455,1.82,0);group.add(leftLegRemote);partRemoteLeg(leftLegRemote,pantsRemote);
+  const rightLegRemote=new THREE.Group();rightLegRemote.position.set(.455,1.82,0);group.add(rightLegRemote);partRemoteLeg(rightLegRemote,pantsRemote);
+  function partRemote(parent){const m=new THREE.Mesh(new THREE.BoxGeometry(.9,1.8,.9),skinRemote);m.position.y=-.9;m.castShadow=true;parent.add(m);}
+  function partRemoteLeg(parent,material){const m=new THREE.Mesh(new THREE.BoxGeometry(.89,1.82,.9),material);m.position.y=-.91;m.castShadow=true;parent.add(m);}
+  const nameplate=makeNameplate(info.name||'Player','#ffffff');group.add(nameplate);
+  group.position.set(info.x||0,Number.isFinite(info.y)?info.y:GROUND_FOOT_HEIGHT,info.z||0);group.rotation.y=info.yaw||0;
+  scene.add(group);
+  remotePlayers.set(info.id,{mesh:group,target:new THREE.Vector3(group.position.x,group.position.y,group.position.z),targetYaw:group.rotation.y,name:info.name||'Player'});
+}
+function updateRemotePlayerState(info){
+  const entry=remotePlayers.get(info.id); if(!entry) {createRemoteAvatar(info);return;}
+  if(![info.x,info.y,info.z,info.yaw].every(Number.isFinite))return;
+  entry.target.set(info.x,info.y,info.z);entry.targetYaw=info.yaw;
+}
+function removeRemotePlayer(id){
+  const entry=remotePlayers.get(id);if(!entry)return;scene.remove(entry.mesh);entry.mesh.traverse(o=>{if(o.isMesh||o.isSprite){if(o.geometry)o.geometry.dispose();if(o.material){if(Array.isArray(o.material))o.material.forEach(m=>m.dispose());else o.material.dispose();}}});remotePlayers.delete(id);
+}
+function updateRemotePlayers(dt){
+  for(const entry of remotePlayers.values()){
+    entry.mesh.position.lerp(entry.target,1-Math.exp(-14*dt));
+    const delta=Math.atan2(Math.sin(entry.targetYaw-entry.mesh.rotation.y),Math.cos(entry.targetYaw-entry.mesh.rotation.y));
+    entry.mesh.rotation.y+=delta*Math.min(1,12*dt);
+  }
+}
+function replaceWorldBlocks(blocks){
+  for(const block of [...placedBlocks]) removePlacedBlock(block,false);
+  for(const data of (Array.isArray(blocks)?blocks:[]).slice(0,300)){
+    if(!data || typeof data.id!=='string' || ![data.x,data.y,data.z,data.yaw].every(Number.isFinite))continue;
+    createPlacedBlock(data.x,data.y,data.z,{id:data.id,yaw:data.yaw,color:Number.isFinite(data.color)?data.color:0x9aa7b6,send:false});
+  }
+  selectPlacedBlock(null);updateEditorPanel();
+}
+function handleNetworkPacket(packet){
+  if(!packet || typeof packet.type!=='string')return;
+  switch(packet.type){
+    case 'welcome':
+      networkPlayerId=packet.id;connectedRoom=packet.room||'baseplate';
+      if(packet.name) networkNameInput.value=packet.name;
+      networkConnectButton.textContent='DISCONNECT';
+      clearRemotePlayers();
+      for(const p of (packet.players||[]))createRemoteAvatar(p);
+      replaceWorldBlocks(packet.blocks||[]);
+      setLocalPlayerName(packet.name || networkNameInput.value || 'Builder');
+      setNetworkStatus(`ONLINE · ${remotePlayers.size+1} PLAYERS`, 'online');
+      addMessage(`Connected to room "${connectedRoom}". ${remotePlayers.size} other player(s) here.`,true);
+      networkReconnectDelay=1000;
+      sendNetwork({type:'state',x:player.position.x,y:player.position.y,z:player.position.z,yaw:player.rotation.y});
+      break;
+    case 'player:joined': createRemoteAvatar(packet.player);setNetworkStatus(`ONLINE · ${remotePlayers.size+1} PLAYERS`,'online');addMessage(`${packet.player?.name||'A player'} joined.`,true);break;
+    case 'player:left': removeRemotePlayer(packet.id);setNetworkStatus(`ONLINE · ${remotePlayers.size+1} PLAYERS`,'online');addMessage(`${packet.name||'A player'} left.`,true);break;
+    case 'player:state': if(packet.id!==networkPlayerId)updateRemotePlayerState(packet);break;
+    case 'chat': addMessage(packet.text,false,packet.name||'Player');break;
+    case 'block:set': if(packet.block)upsertNetworkBlock(packet.block);break;
+    case 'block:delete': {const b=placedBlocks.find(v=>v.userData.netId===packet.id);if(b)removePlacedBlock(b,false);break;}
+    case 'error': addMessage(packet.message||'Server error.',true);break;
+    case 'room:count': setNetworkStatus(`ONLINE · ${packet.count} PLAYERS`,'online');break;
+  }
+}
+function connectMultiplayer(){
+  const url=networkUrlInput.value.trim();const name=(networkNameInput.value.trim()||'Builder').slice(0,20);const room=(networkRoomInput.value.trim()||'baseplate').slice(0,32);
+  if(!/^wss?:\/\//i.test(url)){toast('Enter a ws:// or wss:// server address');return;}
+  if(location.protocol==='https:' && url.startsWith('ws://')){toast('HTTPS pages require a secure wss:// server');return;}
+  networkWanted=true;clearTimeout(networkReconnectTimer);
+  if(networkSocket){try{networkSocket.close(1000,'Reconnect');}catch{}}
+  setNetworkStatus('CONNECTING…');networkConnectButton.textContent='CONNECTING';networkNameInput.disabled=true;networkRoomInput.disabled=true;
+  try{
+    const ws=new WebSocket(url);networkSocket=ws;
+    ws.addEventListener('open',()=>{if(networkSocket!==ws)return;ws.send(JSON.stringify({type:'join',name,room}));});
+    ws.addEventListener('message',event=>{if(networkSocket!==ws)return;try{handleNetworkPacket(JSON.parse(event.data));}catch(err){console.warn('Bad multiplayer packet',err);}});
+    ws.addEventListener('error',()=>{if(networkSocket===ws)setNetworkStatus('CONNECTION ERROR','bad');});
+    ws.addEventListener('close',()=>{
+      if(networkSocket!==ws)return;networkSocket=null;networkPlayerId=null;clearRemotePlayers();
+      networkNameInput.disabled=false;networkRoomInput.disabled=false;networkConnectButton.textContent='CONNECT';setNetworkStatus('OFFLINE','bad');
+      if(networkWanted){const wait=networkReconnectDelay;networkReconnectDelay=Math.min(15000,networkReconnectDelay*2);networkReconnectTimer=setTimeout(()=>connectMultiplayer(),wait);}
+    });
+  }catch(err){setNetworkStatus('CONNECTION ERROR','bad');networkNameInput.disabled=false;networkRoomInput.disabled=false;networkConnectButton.textContent='CONNECT';}
+}
+networkConnectButton.addEventListener('click',()=>{
+  if(networkWanted && (networkSocket || networkReconnectTimer)){
+    networkWanted=false;clearTimeout(networkReconnectTimer);networkReconnectTimer=null;
+    if(networkSocket){const old=networkSocket;networkSocket=null;try{old.close(1000,'User disconnected');}catch{}}
+    clearRemotePlayers();networkNameInput.disabled=false;networkRoomInput.disabled=false;networkConnectButton.textContent='CONNECT';setNetworkStatus('OFFLINE');
+  }else connectMultiplayer();
+});
+networkNameInput.addEventListener('change',()=>{if(networkOpen())toast('Name changes apply after reconnecting');});
+function sendLocalPlayerState(){sendNetwork({type:'state',x:player.position.x,y:player.position.y,z:player.position.z,yaw:player.rotation.y});}
+
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),.04);
+  updateRemotePlayers(dt);
+  networkStateTimer += dt;
+  if (networkStateTimer >= 1/15) { networkStateTimer = 0; if(networkOpen() && !editorMode) sendLocalPlayerState(); }
+  if (editorMode) {
+    // Build mode uses a free orbit camera while the R6 avatar is temporarily hidden.
+    renderer.render(scene,camera);
+    return;
+  }
+  // Build movement from the camera's REAL horizontal look direction, not from
+  // the avatar's previous facing direction. This makes W go where the player
+  // is looking, even after orbiting the third-person camera all the way around.
+  // Flatten camera pitch so looking up/down never pushes the character into the air.
+  camera.getWorldDirection(cameraForward);
+  cameraForward.y = 0;
+  if (cameraForward.lengthSq() < 1e-8) cameraForward.set(0, 0, -1);
+  cameraForward.normalize();
+  const worldUp = new THREE.Vector3(0, 1, 0);
+  const cameraRight = new THREE.Vector3().crossVectors(cameraForward, worldUp).normalize();
+  const move = new THREE.Vector3();
+  if(keys.KeyW||keys.ArrowUp) move.add(cameraForward);
+  if(keys.KeyS||keys.ArrowDown) move.sub(cameraForward);
+  if(keys.KeyD||keys.ArrowRight) move.add(cameraRight);
+  if(keys.KeyA||keys.ArrowLeft) move.sub(cameraRight);
+  const moving=move.lengthSq()>0;
+  if(moving){
+    move.normalize();
+    const speed=(keys.ShiftLeft||keys.ShiftRight)?10.5:6.2;
+    // Turn the R6 body toward travel before testing its oriented collision box.
+    const targetYaw = Math.atan2(-move.x, -move.z);
+    const yawDelta = Math.atan2(
+      Math.sin(targetYaw - player.rotation.y),
+      Math.cos(targetYaw - player.rotation.y)
+    );
+    player.rotation.y += yawDelta * Math.min(1, 14 * dt);
+
+    movePlayerAxis('x', move.x * speed * dt);
+    movePlayerAxis('z', move.z * speed * dt);
+    walkPhase+=dt*(speed>7?13:9);
+  }
+  // Keep the avatar on this little property instead of letting it walk into the void.
+  player.position.x=clamp(player.position.x,-22.1,22.1);
+  player.position.z=clamp(player.position.z,-22.1,22.1);
+  const previousBottom = player.position.y;
+  const previousTop = previousBottom + PLAYER_COLLISION_HEIGHT;
+  velocityY -= 22 * dt;
+  const proposedBottom = previousBottom + velocityY * dt;
+  let resolvedVertical = false;
+
+  if (velocityY <= 0) {
+    // Land on the highest cube top crossed this frame. This also keeps the
+    // character supported when standing still, walking across a cube, or
+    // landing on a rotated cube's actual footprint.
+    let landingTop = null;
+    for (const block of placedBlocks) {
+      const top = block.position.y + 1;
+      const crossedTop = previousBottom >= top - COLLISION_SKIN && proposedBottom <= top + COLLISION_SKIN;
+      if (crossedTop && overlapsPlayerBlockXZ(player.position.x, player.position.z, block)) {
+        if (landingTop === null || top > landingTop) landingTop = top;
+      }
+    }
+    if (landingTop !== null) {
+      player.position.y = landingTop;
+      velocityY = 0;
+      grounded = true;
+      resolvedVertical = true;
+    }
+  } else {
+    // Hit the underside of a cube when jumping into it; do not let the head pass through.
+    const proposedTop = proposedBottom + PLAYER_COLLISION_HEIGHT;
+    let ceilingBottom = null;
+    for (const block of placedBlocks) {
+      const bottom = block.position.y - 1;
+      const crossedUnderside = previousTop <= bottom + COLLISION_SKIN && proposedTop >= bottom - COLLISION_SKIN;
+      if (crossedUnderside && overlapsPlayerBlockXZ(player.position.x, player.position.z, block)) {
+        if (ceilingBottom === null || bottom < ceilingBottom) ceilingBottom = bottom;
+      }
+    }
+    if (ceilingBottom !== null) {
+      player.position.y = ceilingBottom - PLAYER_COLLISION_HEIGHT;
+      velocityY = 0;
+      grounded = false;
+      resolvedVertical = true;
+    }
+  }
+
+  if (!resolvedVertical) {
+    player.position.y = proposedBottom;
+    if (player.position.y <= GROUND_FOOT_HEIGHT) {
+      player.position.y = GROUND_FOOT_HEIGHT;
+      velocityY = 0;
+      grounded = true;
+    } else {
+      grounded = false;
+    }
+  }
+  const swing=moving?Math.sin(walkPhase)*.62:0;
+  leftLeg.rotation.x=swing; rightLeg.rotation.x=-swing;
+  leftArm.rotation.x=-swing*.78; rightArm.rotation.x=swing*.78;
+  if(!moving && grounded){leftLeg.rotation.x*=.82;rightLeg.rotation.x*=.82;leftArm.rotation.x*=.82;rightArm.rotation.x*=.82;}
+  // Small walk bob in both views. First-person sits at eye height; third-person
+  // orbits behind the avatar using the same pointer-locked camera rotation.
+  const bob = moving && grounded ? Math.abs(Math.sin(walkPhase*2)) * 0.045 : 0;
+  if (firstPerson) {
+    camera.position.set(player.position.x, player.position.y + FIRST_PERSON_EYE_HEIGHT + bob, player.position.z);
+  } else {
+    cameraTarget.set(player.position.x, player.position.y + THIRD_PERSON_TARGET_HEIGHT + bob, player.position.z);
+    camera.getWorldDirection(cameraForward);
+    camera.position.copy(cameraTarget).addScaledVector(cameraForward, -THIRD_PERSON_DISTANCE);
+  }
+  renderer.render(scene,camera);
+}
+animate();
+
+window.addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+});
+
+// Local-only chat. Messages are displayed in this browser and are not sent to a server.
+const chatInput=document.getElementById('chat-input');
+const messages=document.getElementById('messages');
+const chatForm=document.getElementById('chat-form');
+function addMessage(text,system=false,who='Builder'){
+  const row=document.createElement('div'); row.className='msg'+(system?' system':'');
+  if(system) row.textContent=text;
+  else { const whoEl=document.createElement('span'); whoEl.className='who'; whoEl.textContent=String(who).slice(0,20)+':'; row.append(whoEl,document.createTextNode(String(text).slice(0,180))); }
+  messages.appendChild(row); messages.scrollTop=messages.scrollHeight;
+  while(messages.children.length>60) messages.removeChild(messages.firstChild);
+}
+chatForm.addEventListener('submit',e=>{
+  e.preventDefault(); const value=chatInput.value.trim().slice(0,180); if(!value)return;
+  if(value.toLowerCase()==='/help') addMessage('Controls: click the world to lock the mouse, WASD move, mouse look, Space jump, Shift sprint, V change view, E opens build mode, add cubes and drag parts, right-drag to orbit, wheel to zoom, ESC unlock, R respawn. Connect to a WebSocket room to chat with others.',true);
+  else if(value.toLowerCase()==='/clear'){messages.innerHTML='';addMessage('Chat cleared on this device.',true);}
+  else if(networkOpen()) sendNetwork({type:'chat',text:value});
+  else addMessage(value,false,`${networkNameInput.value.trim()||'Builder'} (local)`);
+  chatInput.value='';
+});
+
+// Start in third-person, looking slightly down at the R6 avatar from behind.
+camera.rotation.set(0.10, 0, 0);
+setViewMode(false, false);
+cameraTarget.set(0, player.position.y + THIRD_PERSON_TARGET_HEIGHT, 0);
+camera.getWorldDirection(cameraForward);
+camera.position.copy(cameraTarget).addScaledVector(cameraForward, -THIRD_PERSON_DISTANCE);
+setTimeout(()=>toast('Click to play · V changes view · E opens build mode'),650);
+</script>
+</body>
+</html>

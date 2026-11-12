@@ -1,0 +1,693 @@
+BLOCKYARD — MULTIPLAYER + SUPABASE + MAXIMUM-DEFENSE SECURITY IMPLEMENTATION PROMPT
+
+ROLE
+You are a senior full-stack game-platform engineer, multiplayer networking engineer, Three.js developer, TypeScript/Next.js engineer, and Supabase/Postgres security engineer. You are working inside the existing Blockyard codebase. Your task is to turn the current local-play prototype into a working first version of real online multiplayer for published experiences, while preparing and implementing a safe Supabase backend migration.
+
+IMPORTANT CONTEXT ABOUT THIS PROJECT
+Blockyard is a browser-based Roblox-like game creation platform. It already has a Three.js Studio/editor, a custom Lua-like scripting runtime called BloxScript, a Play mode, character rigs and animation support, publishing UI, platform pages, and a separate WebSocket service for collaborative Studio editing.
+
+The current code audit found these important facts. Verify them against the live workspace before changing anything:
+- `src/components/web/GamePlayer.tsx` creates a `StudioEngine` and a local `PlayController` in the browser. It currently starts Play mode with `{ admin, bots: 4 }`.
+- `src/lib/studio/net.ts` is a WebSocket client for collaborative Studio synchronization. It is not currently the authoritative network layer for published game sessions.
+- `mini-services/studio-sync/index.ts` is the existing Studio Team Create relay. It has rooms, connected builders, chat, player-state messages, and shared placed parts. It is not a dedicated game simulation server and currently has no proper signed-in account authentication/authorization.
+- `src/lib/studio/auth.ts`, `src/lib/studio/platform.ts`, and `src/lib/studio/webdata.ts` contain browser-local persistence for accounts/platform data. This is intentional for the prototype stage; do not describe that as a mistake. The goal now is to migrate the authoritative data to Supabase while keeping local storage only for appropriate caches, local drafts, offline work, or a clearly labeled demo fallback.
+- `src/components/web/PublishModal.tsx` and the existing publishing/platform components are part of the current user workflow. Preserve them and connect them to the backend instead of replacing the whole UI.
+- The app uses Next.js 16.x, React, TypeScript, Three.js, Bun scripts, and a separate `mini-services/studio-sync` service. Confirm exact versions in `package.json` before installing or changing packages.
+- The current `.env.example` only has the local Prisma SQLite `DATABASE_URL`. Do not overwrite useful existing configuration.
+- The previous source review found `typescript.ignoreBuildErrors: true` in `next.config.ts`. Do not hide type errors. Create a safe path to remove that setting once the code checks pass.
+
+CORE GOAL
+Implement actual multiplayer INSIDE published Blockyard games. Two or more people who join the same published experience/session must be able to see each other's real player characters in the same world, see movement update, see players join and leave, and exchange in-game chat. The first implementation must be a real connected multiplayer vertical slice, not just a UI mockup, fake bots, a local simulation, or a relay that blindly trusts client coordinates.
+
+Keep these two systems separate:
+1. Studio Team Create: collaborative editing of a project in Studio.
+2. Published-game multiplayer: live players sharing one running game session.
+
+Do not delete or break Team Create to add game multiplayer. Do not reuse the Studio room protocol as if it were a game server. They may share authentication and reusable networking utilities, but they must have separate room types, permissions, packet schemas, lifecycle, and tests.
+
+WORKING RULES — READ BEFORE CODING
+1. Inspect the current workspace first. Read the actual files, package scripts, engine, PlayController, character/avatar creation, serialization, publish flow, auth, platform data, Studio networking, and deployment configuration. Do not assume that the previous audit describes code that has since changed.
+2. Make a short implementation map before editing: existing flow, files to change, new files, risks, and test plan.
+3. Work incrementally. Build a vertical slice and test it before expanding into the rest of the platform.
+4. Preserve the current UI, editor, BloxScript features, animation system, saved projects, and offline/demo play. Do not rewrite the whole application or replace the engine just to add networking.
+5. Do not silently remove features, change controls, rename routes, or invalidate user-created projects.
+6. Do not claim a feature works unless you ran a meaningful test. State exactly what was tested and what still needs a real two-browser test or deployment test.
+7. Do not invent Supabase credentials, project IDs, database passwords, deployment URLs, or WebSocket URLs. Prepare all code and setup instructions with placeholders if the user has not connected Supabase yet.
+8. Never ask the user to paste a Supabase secret/service key into chat. Tell the user to put secrets only in their local `.env.local` or hosting-provider environment settings.
+9. Do not commit `.env`, `.env.local`, database passwords, access tokens, private keys, or real user data. Keep `.env.example` populated with empty placeholders only.
+10. Back up or preserve existing data before migrations. Never run destructive reset, drop, truncate, or `prisma db push --accept-data-loss` against a real database. Never run a destructive command against the remote Supabase project.
+11. If credentials or a Supabase project are not available, still complete as much preparation as possible: client setup, server setup, migrations, RLS policies, tests, `.env.example`, and a precise manual setup guide. Stop before attempting to connect to a nonexistent project and clearly tell the user what remains for them to do.
+12. Prefer official, current Supabase documentation and APIs. Do not copy deprecated examples. Confirm current Next.js 16 Supabase SSR guidance before writing auth/proxy code.
+
+PART A — REAL MULTIPLAYER FOR PUBLISHED GAMES
+
+A1. Create a separate game-session server
+- Add a dedicated service, preferably under `mini-services/game-server/`, with its own package/config and clear run instructions.
+- Reuse the existing WebSocket library if appropriate, but do not merge this service into `studio-sync/index.ts`.
+- Support multiple game rooms/sessions at once, with unique session IDs, experience IDs, player IDs, room lifecycle, configurable player limits, and clean disconnect handling.
+- Provide a simple first matchmaking flow: a player clicks Play on a published public experience; the client joins an available session or creates one; another player choosing the same experience can join the same session until it is full.
+- Support private/reserved sessions only if the existing product UI already needs them; otherwise design the interface but do not overbuild them in the first pass.
+- Make room capacity configurable. Choose a sensible modest default for the prototype, document it, and do not hard-code an assumption throughout the code.
+- Remove the assumption that four bots represent multiplayer. Bots may remain as an optional local testing feature, but online sessions must not spawn four demo bots by default. Do not count bots as real connected players.
+- The initial service may keep active session/player state in memory for a single-instance prototype. Document that multiple game-server instances will need a shared coordinator/Redis or equivalent and implement clean interfaces so this can be added. Do not store high-frequency player movement in Postgres.
+
+A2. Authentication and room authorization
+- A browser WebSocket cannot generally attach arbitrary custom authorization headers. Authenticate immediately after opening the socket with a first `auth` packet containing the current Supabase access token, then require successful validation before accepting any join or gameplay packet. Apply a short auth timeout and close unauthenticated connections.
+- Never trust a client-supplied user ID, username, role, ownership claim, admin flag, player count, or permission. Resolve the verified account identity from the verified Supabase token. Read the display name/avatar from the trusted profile record or validate it against the account.
+- Verify JWT signature, issuer, audience, and expiry using a current Supabase-supported validation method. Do not merely base64-decode a JWT or trust its claims without verifying the signature. Do not put access tokens in URL query strings.
+- Before joining, verify that the requested experience exists, is published/visible to this user, and that the user is allowed to join it. Prevent guessing a private room ID to bypass game privacy.
+- Enforce per-account and per-IP connection/rate limits where practical. Limit packet bytes, packet frequency, malformed packets, chat length, and room count. Validate every packet with a strict schema (Zod or an equivalent already used by the app).
+- Give every server message a documented packet type and version. Reject unknown or invalid gameplay packet shapes safely.
+
+A3. First playable multiplayer vertical slice
+Implement and verify this minimum end-to-end experience before attempting advanced gameplay:
+- Two separate browser tabs/devices can sign in as different users and join the same published game session.
+- Both users spawn in the same game map, at valid spawn points.
+- Each user sees the other user's avatar/character in the correct approximate position and orientation.
+- Walking, jumping, and stopping update remotely with smooth interpolation rather than visible teleporting or jitter wherever possible.
+- Join and leave events update the visible player list and remove disconnected characters.
+- In-game chat is shared by the people in that session, with server-validated sender identity and message length.
+- Reconnection/temporary disconnect has a defined outcome. Avoid duplicate player avatars after reconnect.
+- Exiting a game closes the connection and removes remote visual entities/listeners/timers.
+- If the server is unavailable, the app should show a clear connection failure and offer Local Play where appropriate. Do not pretend local play is online play.
+
+A4. Server authority — do not build a fake multiplayer relay
+- Do not simply broadcast arbitrary x/y/z values sent by clients and call that secure multiplayer.
+- For the first MVP, the game server must be authoritative for player identity, session membership, canonical player transforms, movement bounds/speed limits, and important gameplay events. Clients send bounded input intentions (for example directional input, jump request, sequence number, and client timestamp), not unrestricted state changes.
+- Reuse/extract the existing PlayController movement and collision logic where feasible. Identify which calculations are browser-only or depend on Three.js/DOM. Extract pure reusable movement/math/collision code where possible so the server can run the same validated rules without importing browser-only renderer code.
+- Create a minimal server-side collision representation from the published map's static collidable parts. The first milestone may limit server-authoritative collision to the static geometry/features supported by the current engine, but document the exact limitation. Do not claim arbitrary moving-body physics is server-authoritative if it is not.
+- Validate max speed, acceleration, jump, gravity, teleport distance, input cadence, and world bounds. Reject impossible movement and rate abuse. Send authoritative transform snapshots back to clients.
+- Implement client-side interpolation between received snapshots. If prediction/reconciliation is added, keep it separate and bounded; do not let client prediction overwrite authoritative state permanently.
+- Use a configurable server simulation tick and snapshot rate. Start conservatively (for example, a 20 Hz simulation and a 10–20 Hz network snapshot) and profile before increasing it. Do not broadcast every browser render frame or every React state update.
+- Keep transient movement/physics traffic on the dedicated game WebSocket service. Supabase Realtime is not the authoritative physics server and must not be used as a high-frequency position broadcast loop.
+- For moving assemblies/vehicles, combat, damage, projectiles, tools, ownership and inventory, do not claim full server authority unless implemented. Establish a clear extension boundary and a roadmap. Do not let a client award itself currency, damage, items, ownership, or admin status.
+
+A5. Remote character rendering
+- Reuse the existing character/rig creation and animation systems where practical.
+- A remote player should be rendered as a remote-controlled avatar, not another local PlayController instance with keyboard input.
+- Remote avatars should receive server-authoritative transform snapshots and interpolate smoothly.
+- Ensure remote avatars do not collide as if they were locally controlled unless the design explicitly requires it.
+- Avoid creating/destroying meshes on every network packet. Create on join, update transforms, remove on leave.
+- Avoid duplicate tick loops and event listeners. Ensure cleanup on unmount, disconnect, game exit, and React Strict Mode remounts.
+- Reuse avatar display name/thumbnail safely. Never allow arbitrary untrusted HTML or script injection through names/chat.
+- If the local player has an R6/R15 rig or custom avatar, map remote animation states safely. Begin with idle/walk/jump/fall state replication if full animation replication is too large. Do not break the existing Animation Editor or recently fixed animation track behavior.
+
+A6. Shared gameplay events and scripts
+- Inspect BloxScript's existing Script, LocalScript, ModuleScript, services, Events, RemoteEvent-like support, and security sandbox.
+- Do not run user-authored scripts with unrestricted Node.js access, filesystem access, process access, or arbitrary network access on the game server.
+- Design a server/client execution boundary. Server-side actions such as damage, rewards, inventory changes, purchases, and game-state mutations must be validated on the trusted server.
+- If implementing server-side BloxScript in this milestone is too large, explicitly implement/document the first safe multiplayer API boundary (for example, validated RemoteEvent/request-response packets) and do not pretend all BloxScript scripts execute server-side.
+- Add instruction/time budgets and size/rate limits to any server-executed user code. Keep the existing client sandbox and instruction budget intact.
+
+A7. Studio Team Create remains separate
+- Keep `mini-services/studio-sync/` and `src/lib/studio/net.ts` for collaborative editing.
+- Add Supabase account authentication and server-side room access checks to Studio sync. A random room name must not grant write access to a project.
+- A user must have owner/collaborator permission to edit a project room. Read-only visitors must not be allowed to send part modifications.
+- Validate all part payloads and operations. Do not permit arbitrary `parts:sync` to overwrite the whole room unless the sender is authorized and the operation has a safe conflict/version check.
+- Preserve existing Team Create behavior and UI as much as possible.
+
+PART B — SUPABASE BACKEND MIGRATION
+
+B1. Use Supabase for the right jobs
+Use Supabase as the platform's trusted persistent backend:
+- Auth: signup, login, logout, password reset, email verification/session.
+- Postgres: user profile records, published experience metadata, experience versions/metadata, collaborators/permissions, asset metadata, favorites/likes/visits if present, moderation records, and eventually purchases/currency ledger.
+- Storage: uploaded assets, thumbnails, icons, project snapshots or other large binary/project files, with appropriate access policies.
+- Realtime: optional presence for online status/low-frequency room presence, and low-rate chat/notifications where appropriate.
+
+Do NOT use Supabase Realtime Presence to send every player movement update; its own documentation says it is intended for slow-changing state, not high-frequency updates. Use the dedicated game-server WebSocket for live gameplay. Do not put the authoritative game physics loop inside a Supabase Edge Function or Postgres trigger.
+
+B2. Supabase client setup for this project
+- Confirm this is Next.js 16.x and follow the CURRENT official Supabase Next.js SSR instructions.
+- Install the documented packages only if missing: `@supabase/supabase-js` and `@supabase/ssr`.
+- Create separate browser and server client helpers using the currently supported `createBrowserClient` and `createServerClient` patterns.
+- For Next.js 16 use the current `proxy.ts` session-refresh pattern as documented for Next.js 16. Do not blindly create a `middleware.ts` file from an old tutorial. Ensure cookie handling is correct for the installed Next.js version.
+- Use cookie-based SSR auth with the PKCE flow as recommended by current Supabase docs. Use a server-side user/claims verification method in protected Route Handlers and Server Actions.
+- Do not store the authoritative session in a custom localStorage password/session scheme. The Supabase client may manage its documented browser session mechanism, but server checks must use verified Supabase auth and cookies/tokens.
+- Use environment variables with names that are explicit and documented. Recommended baseline:
+  `NEXT_PUBLIC_SUPABASE_URL=`
+  `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=`
+  `SUPABASE_SECRET_KEY=` (optional server-only key only if genuinely needed for trusted admin tasks; never prefix with NEXT_PUBLIC)
+  `GAME_SERVER_URL=`
+  `GAME_SERVER_INTERNAL_SECRET=` (only if the architecture genuinely needs service-to-service authentication; server only)
+- Never expose `SUPABASE_SECRET_KEY`, internal secrets, Postgres passwords, signing keys, or other privileged credentials in client bundles, browser storage, public API responses, logs, or committed files.
+- Prefer user-scoped queries and RLS. If a privileged server operation needs the secret key, isolate it in a server-only module and use it only for the specific trusted operation. Never use the secret key as a shortcut around designing RLS.
+
+B3. Migrate the current browser-local platform data safely
+Inspect `src/lib/studio/auth.ts`, `src/lib/studio/platform.ts`, `src/lib/studio/webdata.ts`, and every call site before changing behavior.
+- Replace browser-local accounts/passwords/session/roles with Supabase Auth and a `profiles` table.
+- Never upload existing raw passwords from localStorage. Existing local demo users must sign up again or use a clearly explained account migration/reset path. Do not claim their old passwords were migrated.
+- Provide a safe optional local-data export/import path for the user's own non-secret projects and assets. Never migrate local admin flags, bans, privileges, or user-supplied balances as trusted values.
+- Migrate published game metadata to Postgres and project/asset blobs to Supabase Storage or an appropriate structured version table. Determine from the current serializer what needs to be persisted. Do not put enormous binary payloads directly in ordinary metadata rows.
+- Preserve local unsaved Studio drafts and offline work. Clearly separate local draft/cache storage from cloud-published canonical data.
+- After successful cloud save/publish, show clear saved/published status and errors. Avoid deleting the local draft until the cloud write has been confirmed.
+- On users without Supabase environment configuration, show a clear configuration message or safe prototype-only mode. Do not crash the entire Studio.
+
+B4. Database schema and migration files
+Create reproducible SQL migrations under `supabase/migrations/` (initialize `supabase/` if necessary). Derive exact columns and JSON shapes from the current Blockyard types and serializers; do not guess or silently discard fields.
+
+At minimum, assess and implement tables equivalent to:
+- `profiles`: `id` references `auth.users`, unique username/handle, display name, avatar reference, timestamps. Profile roles/privileges must not be client-editable.
+- `experiences`: owner, title, description, visibility/publication state, thumbnail/storage references, active version, created/updated timestamps.
+- `experience_versions`: experience ID, version number, serialized project snapshot/storage path, creator, published flag and timestamp. Preserve revision history rather than overwriting every version.
+- `experience_collaborators`: experience ID, user ID, explicit role/permissions, created timestamp, unique membership constraints.
+- `assets`: owner, storage path, type, metadata, visibility and timestamps.
+- `favorites`/`likes`/`visits` only if those features exist in the project and are actually used. Use uniqueness constraints to prevent duplicate likes/favorites.
+- `moderation_reports` and `moderation_actions` only if matching existing UI/workflows are present; moderation authority is server-only.
+- `purchases` and `currency_ledger` only as a carefully designed future/next-stage migration if the prototype's current marketplace needs them. All balance changes must be atomic server-side database transactions/RPCs with audit records, idempotency keys and constraints. Never trust a client-provided balance or price.
+- active game sessions may have a small session registry/heartbeat table if needed for discovery, but do not store every player transform in Postgres.
+
+Define foreign keys, indexes, unique constraints, timestamps, delete behavior, and JSON schema validation/versioning where appropriate. Add migration rollback notes where safe; avoid destructive rollback assumptions for real user data.
+
+B5. RLS and database security — mandatory
+- Enable Row Level Security on EVERY table exposed through the Supabase Data API.
+- Explicitly set grants and policies for each operation, rather than relying on vague broad access. A policy does not remove an existing table grant.
+- Public visitors may read only published/public experience data and public profile fields that are intentionally public.
+- An owner can create/update/delete their own experience metadata and versions. Collaborators can only perform actions allowed by their explicit collaborator role.
+- Users can read/update only their own private profile fields. Do not allow clients to modify admin roles, moderation decisions, currency, purchase results, ownership, or trusted counters.
+- A user cannot claim another user's ID on insert/update. Use `auth.uid()` and verify row ownership in policies.
+- Keep private project snapshots and private assets inaccessible to unrelated users. Public thumbnails may be public only if intended.
+- Add Storage bucket policies that restrict user uploads to a folder keyed by the authenticated user's ID, and allow reading only when the experience/asset visibility policy permits it.
+- Avoid recursive RLS policy patterns. Add indexes for fields used in policies.
+- Treat the service/secret API key as an RLS-bypass credential. It must remain server-side and must never be used in client code.
+- Add SQL policy tests under `supabase/tests/` for allowed AND denied access. If Supabase CLI/pgTAP is available, run `supabase test db`; otherwise provide reproducible tests and report that they were not run.
+
+B6. Authentication UI and API conversion
+- Update login/signup/logout/password-reset flows to call Supabase Auth rather than comparing localStorage passwords.
+- Add server-side session validation to protected API routes and publishing actions.
+- Update the profile creation flow safely. Use a database trigger or trusted server flow for creating the initial profile row; never allow a client to assign privileged roles.
+- Add clear loading/error/signed-out states. Prevent duplicate submissions.
+- Do not expose email addresses or private profile fields in public profile APIs.
+- Remove any visible hard-coded demo admin password or client-seeded admin credential. Build a secure server-side admin bootstrap process, documented as manual and restricted.
+- Update the Admin UI so every admin action is authorized on the server, not merely hidden in React.
+
+B7. Asset/project storage
+- Create named buckets based on actual project needs (for example, private `experience-files` and a public `experience-thumbnails` bucket only if thumbnails are meant to be public).
+- Store metadata in Postgres and binary/project snapshots in Storage where appropriate.
+- Use owner-scoped object paths, upload size limits, allowed MIME types, and Storage RLS policies.
+- Validate uploads server-side. Do not trust a browser-provided content type or filename.
+- Do not expose private storage paths or signed URLs permanently. Use appropriate signed URLs for private assets.
+- Add upload progress/error handling and preserve local drafts if an upload fails.
+
+PART C — BUILD, TESTING, DEPLOYMENT, AND ACCEPTANCE
+
+C1. Type safety and build quality
+- Remove `typescript.ignoreBuildErrors: true` from `next.config.ts` only after resolving actual errors or placing non-app scripts/services in appropriately scoped TypeScript configs.
+- Fix the root TypeScript scope if it incorrectly includes standalone mini-services/test scripts; add separate tsconfigs where sensible.
+- Keep linting, typecheck, tests, and production build as separate explicit checks.
+- Do not conceal errors by disabling TypeScript, ESLint, or tests.
+
+C2. Required automated tests
+Add tests for at least:
+- Two authenticated accounts joining the same published session.
+- A third account joining another game room without leaking room state.
+- Missing/invalid/expired JWT is rejected.
+- A client cannot join a private/unpublished game without permission.
+- A user cannot impersonate another user by changing name/user ID in a packet.
+- A client cannot send arbitrary transforms beyond speed/world bounds.
+- Chat sender identity is server-derived and oversized/spam messages are rejected.
+- Player disconnect removes the avatar and presence state.
+- Reconnect does not create duplicate avatars.
+- Session closes after all players leave or after a documented idle timeout.
+- Studio-only collaboration still works and is not accidentally mixed with game rooms.
+- RLS denies another user's private project reads/writes and role escalation.
+- Public visitors can read only public/published data.
+- Owner and authorized collaborator can perform only their permitted project actions.
+- Private storage objects cannot be downloaded by unrelated users.
+- Failed cloud upload/publish does not delete the local draft.
+
+C3. Required manual browser test plan
+Provide exact two-browser instructions: create/sign in as User A in browser profile A; sign in as User B in a separate private/incognito profile; publish or open the same game; confirm both share the same server/session; move both characters, verify remote positions and join/leave; test chat; disconnect/reconnect; verify local/offline mode is labeled correctly. Do not claim this test passed unless actually performed.
+
+C4. Deployment
+- Keep the Next.js web app and game-server service independently deployable.
+- Provide a separate start/build command and environment variables for the game server.
+- Document how to deploy the game server as a persistent WebSocket-capable service (for example, a Render Web Service or equivalent), configure its public `wss://` URL, set allowed origins, and set secrets only in the host's server-side environment dashboard.
+- Do not assume a serverless Next.js route can hold long-lived WebSocket sessions unless the deployment platform explicitly supports that.
+- Explain that a single in-memory room manager is a single-instance prototype. Before scaling horizontally, add Redis/pub-sub or another shared room coordinator and load-balancer/session routing.
+- Add CORS/origin allowlists and health endpoints. Do not use `*` for production allowed origins.
+
+PART D — REQUIRED USER-FACING SUPABASE SETUP GUIDE
+Create a file named `SUPABASE_SETUP.md` in the project. It must be written for a beginner and explain exactly what the user must click, copy, paste, and run. Do not assume the AI has created or accessed the user's Supabase account.
+
+The guide must include these steps, adapted to the actual implementation:
+1. Open `https://supabase.com/` and sign in or create an account.
+2. Create a new project named Blockyard (or another name), choose a region reasonably close to the app's expected users, create a strong database password, and save it privately. Explain that this database password is not the same as the publishable key.
+3. Wait for the project to finish provisioning, then open the project's dashboard and find the Project URL and publishable API key in the current Supabase Connect/API Keys settings. Prefer the current `sb_publishable_...` key if the dashboard provides it; do not copy a secret key into a public variable.
+4. In the local Blockyard project, create `.env.local` from `.env.example` and fill in `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. Add `SUPABASE_SECRET_KEY` only if code genuinely requires a privileged server-only operation. Explain that `NEXT_PUBLIC_` variables are exposed to browsers and must never contain secrets.
+5. Configure Authentication URL settings: set the local Site URL to `http://localhost:3000`, add the exact local callback/redirect URLs required by the actual code, and later add the real production website URL. Enable the providers used by the implementation (email/password at minimum if that is what the app uses). Explain email confirmation/SMTP considerations if relevant.
+6. Apply database migrations. Prefer the reproducible CLI route if supported: install/use the Supabase CLI, run `npx supabase login`, `npx supabase link --project-ref YOUR_PROJECT_REF`, inspect with `npx supabase db push --dry-run --remote`, then apply with `npx supabase db push --remote`. Explain where the project ref is found in the dashboard URL. Also describe the Dashboard SQL Editor route if the user's environment cannot use the CLI: paste/run the generated migration SQL in order. Do not run remote migrations until the user has created/configured the project and reviewed the migration plan.
+7. Create/configure the Storage buckets required by the generated migrations and explain which are public and which are private, plus what their RLS policies permit.
+8. Add the same public URL and publishable key to the local environment; restart the dev server after changing env variables.
+9. Run the actual project dev server and test sign-up, email confirmation, sign-in, sign-out, profile creation, publish, reload from a second browser, and protected/private data access.
+10. For production, add the correct environment variables to the hosting provider for the Next.js app AND separately to the game-server service. Add the production website URL to Supabase Auth redirects. Use `wss://` for the deployed game server. Never send secret keys to a browser or put them in GitHub.
+11. Explain what to do if setup fails: verify URL/key pair, env variable names, restart dev server, auth redirect allowlist, migration status, RLS policy errors, and server WebSocket URL/origin. Include troubleshooting for `Invalid API key`, redirect URL mismatch, RLS permission denied, and game server offline.
+12. Include a checklist of values the user needs to fill in; use placeholders and never fabricate them.
+
+PART E — IMPLEMENTATION PHASES AND STOP CONDITIONS
+Do not try to complete the entire future Roblox platform in one giant unsafe change. Implement in these phases and keep the app runnable after each phase:
+
+PHASE 0 — Audit and architecture map
+- Verify the current project tree and source code.
+- Identify the current local play path, project data serialization format, publish flow, Studio sync protocol, auth and storage dependencies.
+- Write a concise implementation plan and list any schema questions discovered. Make reasonable choices where possible; do not stop for questions unless blocked by missing credentials or a destructive decision.
+
+PHASE 1 — Supabase foundation and migrations
+- Add Supabase browser/server helpers and Next.js 16 proxy session refresh following current docs.
+- Add `.env.example` placeholders and `SUPABASE_SETUP.md`.
+- Add initial SQL migrations, RLS, storage policies and tests.
+- Convert signup/login/profile/session to Supabase Auth without breaking local draft mode.
+- If no credentials exist, complete all source preparation and stop at the clearly identified manual dashboard setup point.
+
+PHASE 2 — Published experience cloud persistence
+- Convert publish/list/open experience flows from localStorage-only to authenticated Postgres/Storage.
+- Preserve local drafts and add export/import or migration path for locally saved user projects.
+- Verify another signed-in browser can see and open a published experience.
+
+PHASE 3 — Real game-server MVP
+- Implement the separate WebSocket game server, secure auth, room/session join flow, player replication, server-validated movement, join/leave, chat, timeouts and cleanup.
+- Connect `GamePlayer.tsx` to the multiplayer session path while preserving explicit Local Play fallback.
+- Do not remove Studio Team Create.
+
+PHASE 4 — Studio sync security and hardening
+- Add authenticated room tickets/tokens, project ownership/collaborator validation, strict packet schemas and permission checks to Studio sync.
+- Preserve collaboration functionality and test unauthorized join/write attempts.
+
+PHASE 5 — Broader gameplay authority and optimization
+- Add safe shared gameplay events and gradually migrate tool interactions, moving objects, combat, inventory and server-side script execution.
+- Profile rendering/network updates with increasing part/player counts. Do not prematurely optimize without measurements.
+
+STOP CONDITIONS
+- If Supabase project credentials are absent, do not invent them; finish code preparation and setup instructions and state exactly what the user needs to provide locally.
+- If a migration could delete or overwrite existing real data, stop before applying it and provide a safe migration/backup plan.
+- If a feature cannot be made truly authoritative in the current scope, label it accurately as client-predicted, server-validated, or server-authoritative. Never label a simple client relay as secure authoritative multiplayer.
+- If the current engine architecture makes a safe implementation much larger than expected, implement the smallest honest end-to-end vertical slice and document the next boundary rather than adding fake functionality.
+
+FINAL DELIVERABLES — REQUIRED
+At the end, provide:
+1. A concise summary of what was actually implemented.
+2. A table with each system, status (implemented/partial/not implemented), and test evidence.
+3. A list of files added/changed and why.
+4. The database schema and migration filenames.
+5. A clear statement of which Supabase steps the user must complete manually.
+6. The exact `.env.local` variable names (not real secret values).
+7. Separate commands to run the Next.js app and the game-server service locally.
+8. Exact instructions for deploying the game-server service and configuring its `wss://` URL.
+9. A two-browser multiplayer test checklist.
+10. Known limitations and the next recommended milestone.
+11. Test results: unit tests, RLS tests, typecheck, lint, production build, service tests. Mark anything not run as NOT RUN; never report it as passed.
+
+DEFINITION OF DONE
+The first multiplayer milestone is done only when two separately authenticated users can join the same published Blockyard experience from two independent browser sessions, see each other's real characters in a shared session, move with server-validated state, see join/leave correctly, and exchange server-attributed chat — while the existing Studio Team Create flow still works independently. The Supabase foundation is done only when the app uses Supabase Auth for real sessions, the essential experience data is stored in Postgres/Storage with RLS, migrations are reproducible, secrets are kept server-side, and the user has a working setup guide.
+
+Now inspect the live project and begin with PHASE 0. Do not just explain what should be done: implement as much as possible in the current workspace, test it, and leave a clear manual Supabase setup checklist for the user.
+
+
+# PART F — MAXIMUM-DEFENSE SECURITY AUDIT, VULNERABILITY RESEARCH, AND HARDENING
+
+## F0. Security objective and authorization boundary
+
+Treat security as a core engineering requirement for Blockyard, not a final polish step. Perform a broad, evidence-based security review of the entire Blockyard codebase and all services being built or maintained for this project: Next.js frontend/server routes, Supabase/Postgres, Storage, authentication, publishing, asset handling, BloxScript, Studio Team Create, WebSocket game server, multiplayer protocol, moderation, marketplace, deployment configuration, and third-party dependencies.
+
+This is an authorized defensive review of the Blockyard code and infrastructure that the project owner controls. You may inspect source code, configuration, dependency manifests, lockfiles, migrations, local test deployments, and the project's own staging environment. You may run static analysis, dependency scanners, unit/integration tests, fuzz tests, and controlled security tests against localhost or an explicitly authorized Blockyard staging instance.
+
+Do NOT scan, probe, exploit, brute-force, bypass authentication on, or attempt to access accounts/data belonging to unrelated websites or third parties. The vulnerability websites listed below are research/reference databases and documentation sources, not targets to attack. Do not use real third-party login endpoints as test targets. Do not test against production users or real customer data. Use synthetic accounts and disposable local/staging data.
+
+The goal is to find likely weaknesses in Blockyard by learning from public vulnerability reports and security standards, then verify whether the same weakness exists in Blockyard's own code and fix it. Never copy an exploit blindly or introduce an unverified workaround.
+
+## F1. Research these public vulnerability and security-reference websites
+
+Before and during the audit, research relevant current documentation and public advisories from these sources. Visit the actual official pages; do not rely only on search snippets or old blog posts.
+
+1. OWASP Top 10:2025 — https://owasp.org/Top10/2025/ or https://top10.owasp.org/
+   - Review all 10 categories, with special attention to Broken Access Control, Security Misconfiguration, Software Supply Chain Failures, Cryptographic Failures, Injection, Insecure Design, Authentication Failures, Software/Data Integrity Failures, Security Logging/Alerting Failures, and Mishandling of Exceptional Conditions.
+2. OWASP API Security Top 10 — https://owasp.org/www-project-api-security/ and https://api-security.owasp.org/
+   - Focus on BOLA/IDOR, broken authentication, broken object-property authorization/mass assignment, unrestricted resource consumption, broken function-level authorization, SSRF, security misconfiguration, improper inventory management, and unsafe consumption of APIs.
+3. OWASP Application Security Verification Standard (ASVS) 5.0 — https://asvs.owasp.org/
+   - Use it as a structured security verification checklist. Select requirements relevant to a browser game platform and document which requirements are applicable, implemented, partially implemented, or not applicable.
+4. OWASP Web Security Testing Guide — https://owasp.org/www-project-web-security-testing-guide/
+   - Use the testing methodology to organize authorized tests for authentication, authorization, sessions, input validation, business logic, client-side security, and API endpoints.
+5. OWASP Cheat Sheet Series — https://cheatsheetseries.owasp.org/
+   - Read the relevant current cheat sheets for XSS, CSRF, Authentication, Authorization, Access Control, Session Management, JWT, OAuth2, WebSocket Security, Node.js Security, Denial of Service, File Upload, SQL Injection Prevention, Input Validation, SSRF, Path Traversal, Mass Assignment, Prototype Pollution, HTTP Security Headers, CSP, Cryptographic Storage, Secrets Management, Password Storage, Error Handling, Logging, and Dependency/Supply Chain Security.
+6. MITRE CWE — https://cwe.mitre.org/data/index.html
+   - Research weakness definitions and prevention guidance. At minimum consider CWE-79 (XSS), CWE-352 (CSRF), CWE-287 (Improper Authentication), CWE-306 (Missing Authentication for Critical Function), CWE-862/CWE-863 (Missing/Incorrect Authorization), CWE-639 (Authorization Bypass Through User-Controlled Key), CWE-915 (Improperly Controlled Modification of Dynamically-Determined Object Attributes / mass assignment), CWE-400 (Uncontrolled Resource Consumption), CWE-789 (Memory Allocation with Excessive Size), CWE-190 (Integer Overflow or Wraparound), CWE-400-related recursion/CPU/memory exhaustion, CWE-22 (Path Traversal), CWE-78 (OS Command Injection), CWE-89 (SQL Injection), CWE-918 (SSRF), CWE-1321 (Prototype Pollution), and relevant unsafe deserialization weaknesses. Confirm CWE names and applicability from MITRE before citing them.
+7. NIST National Vulnerability Database (NVD) — https://nvd.nist.gov/vuln/search
+   - Search CVEs relevant to the exact frameworks, packages, runtimes, WebSocket libraries, image parsers, serialization libraries, and server dependencies actually present in Blockyard.
+8. CISA Known Exploited Vulnerabilities (KEV) Catalog — https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+   - Prioritize a relevant affected dependency when a vulnerability is known to be exploited in the wild. Do not claim that a CVE affects Blockyard unless the installed product/package and affected version match.
+9. GitHub Security Advisories — https://github.com/advisories
+   - Check direct and transitive dependencies against advisories. Use the exact package ecosystem and affected version ranges.
+10. OSV.dev — https://osv.dev/list
+    - Cross-check package versions and lockfile dependencies. Use OSV-Scanner where appropriate: https://google.github.io/osv-scanner/ .
+11. Official Supabase Security and RLS documentation — https://supabase.com/docs/guides/security and https://supabase.com/docs/guides/database/postgres/row-level-security
+    - Verify current guidance for RLS, grants, API exposure, JWT claims, Storage policies, secret keys, and Auth.
+12. Official Next.js security documentation — https://nextjs.org/docs/app/guides/authentication and the current Next.js security advisories/release notes.
+    - Verify the actual installed Next.js version and its supported security configuration. Check official advisories for Next.js, React, React Server Components, and related packages.
+13. Node.js security guidance — https://nodejs.org/en/learn/getting-started/security-best-practices and the OWASP Node.js Cheat Sheet.
+    - Review request limits, event-loop blocking, error handling, dependency integrity, process permissions, and memory/resource controls.
+14. npm audit documentation — https://docs.npmjs.com/cli/commands/npm-audit
+    - Run the appropriate audit using the actual lockfile/package manager. Investigate results instead of blindly applying breaking upgrades.
+
+For each significant finding from a source, record: source URL, publication/update date if available, affected product/package and version range, weakness class, Blockyard component that might be exposed, whether the installed version is actually affected, and the remediation. Prefer official vendor advisories and primary security standards. Be careful to distinguish a general weakness class from a confirmed vulnerability in this project.
+
+## F2. Mandatory vulnerability coverage matrix
+
+Audit every relevant area below. Do not merely mention these risks; inspect the actual implementation, write targeted regression tests, and patch confirmed weaknesses.
+
+| Risk area | What to inspect in Blockyard | Required defensive result |
+|---|---|---|
+| Stored XSS | Profiles, usernames, game names/descriptions, thumbnails metadata, comments, chat, marketplace listings, creator descriptions, moderation notes, imported assets, script/editor output | Untrusted content is rendered as text or safely sanitized for the exact output context; no attacker-controlled HTML/script execution |
+| Reflected XSS | Query parameters, search, invite links, error messages, return URLs, route parameters | Safe rendering and URL validation; no attacker input enters executable HTML/JS/CSS contexts |
+| DOM XSS | `innerHTML`, `outerHTML`, `insertAdjacentHTML`, unsafe URL handling, `dangerouslySetInnerHTML`, DOM templates, postMessage, editor previews | Remove unsafe sinks where possible; sanitize with a maintained allowlist sanitizer only where HTML is required; use safe DOM APIs |
+| CSRF | Cookie-authenticated mutations, account settings, publishing, project deletion, purchases, collaborator changes, admin actions | Use the correct CSRF defense for the auth model, SameSite/secure cookies, origin checks where appropriate, and anti-CSRF tokens where needed; never rely on CORS alone |
+| Clickjacking | Login, account, purchase, publish, admin and sensitive settings pages | Appropriate `frame-ancestors`/frame protection; allow embedding only if explicitly designed |
+| CORS | Next.js routes, game-server HTTP endpoints, WebSocket handshake, Storage access | Exact allowlist of trusted origins; no wildcard credentialed CORS; reject unexpected origins |
+| Broken authentication | Password/email flows, Supabase sessions, refresh, magic links, OAuth providers, third-party login callbacks | Correct verification, PKCE/state/nonce where applicable, safe redirects, expiry, replay protection, and server-side identity verification |
+| Login bypass | Every protected route, server action, API endpoint, WebSocket handshake, publishing action, admin action, and game-session join | Unauthenticated requests fail closed; protected actions verify identity on the server; no UI-only protection |
+| Third-party/OAuth login bypass | OAuth callback, provider identity mapping, email linking, callback `next`/`redirectTo`, account linking, provider error paths | Validate provider response and state/nonce/PKCE; exact redirect allowlist; do not trust email or user ID supplied by the browser; prevent account-linking confusion and open redirects |
+| User-ID spoofing / `0` or `1` privilege bugs | Any route or packet accepting `userId`, `playerId`, `ownerId`, `accountId`, `role`, `admin`, `isAdmin`, `isOwner`, `isAuthenticated`, `permissions`, `teamId`, or numeric IDs | Derive identity from verified session/JWT on the server; use UUID identities where appropriate; explicit authorization checks; never treat `0`, `1`, `true`, or truthiness as proof of identity or privilege |
+| IDOR/BOLA | Experience IDs, asset IDs, project IDs, user IDs, room IDs, purchase IDs, files, private profile data | Verify per-object access for every lookup/mutation; changing or guessing an ID never grants access |
+| Broken function-level authorization | Admin routes, moderation, publishing, deletion, refunds, currency, room creation, asset ownership | Deny by default; server-side role/permission checks at every privileged function |
+| Mass assignment / property authorization | JSON bodies, profile updates, publish payloads, experience metadata, inventory, marketplace transactions | Strict input schemas and explicit writable fields; reject client-supplied protected fields such as `owner_id`, `role`, `is_admin`, `balance`, `verified`, `published`, and `permissions` |
+| SQL injection | Supabase RPC, SQL functions, Prisma queries, raw SQL, search, filters | Parameterized queries and safe SQL functions; no concatenated untrusted SQL |
+| Command injection | Build scripts, image/media conversion, archive extraction, server utilities | No shell interpolation of untrusted data; allowlisted arguments; isolate processes and minimize privileges |
+| SSRF | URL fetchers, image proxy, thumbnail import, asset import, webhook handlers | Strict protocol/domain allowlists; block loopback, private, link-local and metadata IPs after DNS resolution; handle redirects safely; use egress restrictions |
+| Path traversal | Asset paths, exports/imports, zip extraction, project file loading | Canonicalize paths, enforce a fixed root, reject traversal and symlink escapes, use safe archive extraction |
+| Unsafe file upload | Images, textures, models, scripts, project files, avatars | Allowlisted formats, verified MIME/signatures, size and dimension limits, safe parsers, random object names, private storage by default, malware scanning where feasible, signed URLs for private content |
+| Prototype pollution | Imported JSON, user-controlled object keys, deep merge, config overrides, script values | Reject dangerous keys such as `__proto__`, `constructor`, and `prototype` where applicable; use safe maps/objects and schema-validated construction |
+| Unsafe deserialization | Project files, saved experiences, imported models, network packets, BloxScript values | Versioned strict schemas, bounded nesting/arrays, reject unexpected object types/fields, never execute serialized code during parsing |
+| WebSocket hijacking (CSWSH) | Game server and Studio sync handshake | Authenticate before joining; validate exact Origin; enforce per-room authorization; do not trust cookies without origin/CSRF-style defenses |
+| WebSocket message abuse | Movement, chat, tool use, remote events, Studio edits | Validate every packet; max payload; per-account/IP/room rate limits; quotas; sequence/tick checks; backpressure; close abusive peers |
+| Memory exhaustion / allocation floods | JSON bodies, uploads, image/model decode, huge arrays, world snapshots, rooms, player lists, chat history, asset previews | Hard size/count/depth limits before allocation; stream where appropriate; reject oversized requests; bound caches/queues/rooms; clean resources promptly |
+| CPU exhaustion / algorithmic DoS | BloxScript loops, regex, parsing, complex physics, giant maps, recursive JSON, pathfinding, decompression | Execution budgets, timeouts, worker isolation, algorithmic limits, recursion/depth caps, input quotas, avoid catastrophic regex and event-loop blocking |
+| Stack exhaustion | Recursive parsers, nested data, user scripts, cyclic object traversal | Depth limits, iterative traversal where practical, bounded recursion and controlled errors |
+| Integer overflow / numeric coercion | File sizes, dimensions, quotas, counters, currency, physics values, tick rates, index calculations | Validate safe integer/range before arithmetic; reject NaN/Infinity/negative/unreasonably large values; do not let arithmetic bypass limits |
+| Native/WASM memory safety | Native addons, WebAssembly modules, image/model codecs, transpilers or other native dependencies if present | Inventory native code and WASM; update vulnerable components; use supported APIs and sandboxing; test malformed inputs in isolation |
+| Dependency/supply-chain vulnerabilities | `package.json`, Bun/npm lockfiles, transitive deps, GitHub Actions, build plugins | Audit exact installed versions; remove unused packages; update safely; pin/lock dependencies; review install scripts and CI permissions; generate an SBOM where practical |
+| Secret leakage | Git history, source maps, client bundles, logs, `.env`, build output, error reporting | Scan for secrets; rotate exposed secrets; no secret key in `NEXT_PUBLIC_*`, browser bundles, committed files or logs |
+| Cryptographic/session weakness | JWT use, password reset, random IDs, invite tokens, cookies, encryption | Use maintained libraries and secure random generation; validate tokens correctly; short-lived scoped tokens; secure cookie options; no homemade cryptography |
+| Error and logging leakage | Stack traces, SQL errors, auth errors, WebSocket errors, logs and analytics | Generic safe user-facing errors; useful internal structured logs without passwords/tokens/secrets; redact personal data |
+| Rate-limit and abuse bypass | Signup, login, password reset, chat, asset uploads, publishing, search, invitations, game joins, purchases | Per-account and IP-aware rate limits; atomic server-side quotas; cooldowns; abuse monitoring; no client-only throttles |
+| Data leakage / tenant isolation | Profiles, private experiences, draft projects, assets, room metadata, moderation and purchase data | Explicit field-level and row-level access; least privilege; private content inaccessible to other users |
+| Race conditions / replay | Currency, purchases, inventory, ownership, publish versions, invitations, multiplayer actions | Atomic server-side operations, idempotency keys, transaction constraints, nonce/sequence validation and replay protection |
+| Role confusion / privilege escalation | `admin`, numeric roles, role enums, profile metadata, local storage flags, hidden UI | Privileged roles are server-controlled and cannot be self-assigned; all server paths check trusted permissions |
+
+## F3. Special requirement: aggressively test login bypass and `player 0` / `player 1` / numeric-ID mistakes
+
+The owner specifically wants login bypass and the kind of bug where a player/account numbered `0` or `1` is accidentally treated as logged in, privileged, or another user to be checked. Treat this as a mandatory authorization test category.
+
+Search the whole codebase for `userId`, `playerId`, `ownerId`, `accountId`, `id`, `uid`, `role`, `admin`, `isAdmin`, `isOwner`, `authenticated`, `loggedIn`, `session`, `token`, `permissions`, `localStorage`, `sessionStorage`, URL/query parameters, and WebSocket packet fields. Inspect truthiness checks such as `if (userId)`, `if (!userId)`, fallback expressions, `Number(userId)`, `parseInt(userId)`, `role === 1`, `admin === 1`, `Boolean(value)`, and assumptions that IDs are nonzero.
+
+Required behavior:
+1. An unauthenticated request stays unauthenticated even if it sends `userId=1`, `playerId=1`, `userId=0`, `admin=true`, `role=admin`, `isLoggedIn=true`, or a forged localStorage entry.
+2. A user cannot become another user by changing a URL, JSON body, WebSocket packet, cookie, local-storage field, or numeric ID.
+3. A normal user cannot become an admin by changing `role`, `permission`, `admin`, or `isAdmin` to `1`, `true`, or a string.
+4. A player ID is not proof of identity. The server binds the connection to the authenticated Supabase subject after verifying the access token.
+5. Object ownership is checked against the server-derived identity and actual database permissions on every read/write operation.
+6. Missing, null, empty, malformed, negative, out-of-range and unexpected-type identifiers fail safely.
+7. Do not rely on truthiness for identifiers. Use strict schema validation and explicit authorization comparisons.
+8. If numeric IDs remain for legacy data, never use their value as a privilege level or identity assertion.
+
+Add regression tests with User A, User B, an unauthenticated client, a normal user, and an administrator fixture. Test cross-account access to private projects, profiles, assets, session membership, inventory, currency, roles and published experience ownership. Verify rejection at the server/database layer, not merely by hiding UI controls.
+
+## F4. XSS, HTML, editor and creator-content security
+
+Blockyard is a user-generated-content platform. Treat all creator content as untrusted, even when submitted by another authenticated user. Inspect game titles/descriptions, usernames, profile biographies, chat, comments, marketplace listings, asset metadata, error messages, imported project data, animation/script names, editor previews, console output and rich-text/Markdown rendering.
+
+- Prefer React's normal text rendering. Never interpolate untrusted data into raw HTML.
+- Review all uses of `dangerouslySetInnerHTML`, `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `eval`, `new Function`, string-based timers, `document.write`, and untrusted iframe/URL creation.
+- If rich HTML is truly needed, use a maintained sanitizer with a narrow allowlist at the rendering boundary. Do not build a sanitizer from regexes.
+- Validate URL schemes and destinations. Reject `javascript:`, `vbscript:`, and unsafe `data:` use.
+- Add a carefully tested Content Security Policy compatible with Next.js. Do not add broad `unsafe-inline`/`unsafe-eval` merely to silence errors without documenting the tradeoff.
+- Consider Trusted Types where browser/runtime support and app compatibility permit.
+- Configure `X-Content-Type-Options: nosniff`, restrictive `Referrer-Policy`, clickjacking protection via CSP `frame-ancestors`, and HSTS on HTTPS production domains.
+- Keep BloxScript separate from platform JavaScript. Never pass user BloxScript into host JavaScript `eval` or `Function`.
+
+Write harmless regression tests on a local test page. Verify untrusted content remains text and cannot execute script or create unexpected DOM elements.
+
+## F5. CSRF, OAuth, third-party login and browser-boundary security
+
+Determine the real authentication transport for each endpoint. Do not apply generic CSRF instructions without checking whether requests use cookies, bearer headers or both.
+
+For cookie-authenticated state-changing actions, implement the correct CSRF defenses: suitable SameSite cookie attributes, anti-CSRF tokens where needed, Origin/Referer validation where appropriate, and no state-changing GET routes. Protect account updates, publishing, project deletion, purchases, collaborator changes and admin actions. CORS is not a CSRF defense. Use exact origin allowlists; never combine wildcard origins with credentials.
+
+For postMessage, validate exact trusted origins and message schemas. Never accept arbitrary messages as proof of login, identity, admin status or permission.
+
+For OAuth and third-party identity providers:
+- Use supported Supabase Auth flows and PKCE where applicable.
+- Validate `state`, `nonce`, callback state and provider responses according to the flow.
+- Allow only exact, preconfigured redirect destinations; reject arbitrary `next`, `redirect`, or `returnTo` destinations.
+- Do not link accounts merely because an unverified email string matches.
+- Protect account linking/unlinking with reauthentication where appropriate.
+- Do not log authorization codes, access tokens, refresh tokens or password-reset tokens.
+- Test expired/replayed links, duplicate callbacks, mismatched state, provider errors and partial callback states using local/staging test accounts.
+
+
+## F6. Memory overflow, resource exhaustion and denial-of-service hardening
+
+The owner specifically wants memory overflow risks examined. In JavaScript/TypeScript, the most relevant practical web-server risks are often unbounded allocation, memory exhaustion, stack exhaustion, CPU exhaustion, leaks, oversized decoded assets, and resource-usage bugs. Do not incorrectly claim that ordinary JavaScript has the same raw pointer-based buffer-overflow behavior as C. However, inspect native addons, WebAssembly and native media/model libraries separately because their memory safety model can differ.
+
+Inspect all allocations and resource lifetimes, especially:
+- `JSON.parse`, request body parsing and response serialization.
+- Array and typed-array creation from user-supplied lengths.
+- Buffer allocation and file reads.
+- Image and texture decoding.
+- GLTF/model/archive import and decompression.
+- Project snapshot loading and cloning.
+- Recursive traversals, graph walks and physics broad-phase calculations.
+- Game-room/player/chat history collections.
+- WebSocket send queues and pending promises.
+- BloxScript tables, arrays, nested values, recursion and execution loops.
+- Three.js geometry, materials, textures, render targets and event listeners.
+- Timers, observers, workers and subscriptions after player/room/session teardown.
+
+Add configurable hard limits and reject oversized input before allocating or parsing it. Derive and document limits from actual game formats and measured resource use. At minimum, bound:
+- HTTP request body size.
+- WebSocket message size (start with a conservative 64 KiB limit for ordinary control packets; use a separate authenticated streaming/upload path for larger assets).
+- Connections per account/IP and sessions per owner.
+- Players per game session; rooms and pending joins; reconnect attempts.
+- Chat length and message rate.
+- Parts, scripts, nested properties, keyframes and assets per project.
+- Compressed and decompressed project snapshot sizes.
+- Image width, height, pixel count and decode time.
+- Archive file count, nesting, per-file size, total uncompressed size and compression ratio.
+- JSON depth, array length and total object/property count.
+- Script instruction count, wall-clock budget, recursion depth, table allocation budget and event emission rate.
+- Physics entity count, collision pair count, simulation time budget and pathfinding complexity.
+- Queue depth, cache size, retained history and log buffer size.
+
+Additional defenses:
+- Stream large legitimate uploads instead of buffering arbitrary files fully in memory.
+- Use bounded queues and backpressure for WebSocket sends.
+- Close idle/dead sockets and clean up resources after disconnect.
+- Put untrusted or expensive script execution in a constrained worker/process where feasible; never block the main server event loop.
+- Add event-loop lag, heap/external memory, room count, connection count, queue depth and script-budget metrics.
+- Add timeouts/cancellation for costly work.
+- Cap recursion depth and avoid catastrophic-backtracking regex on user input.
+- Check numbers with `Number.isFinite`, safe-integer/range validation and dimension/size caps before arithmetic or allocation.
+- Dispose Three.js geometries, materials, textures and render targets; detach listeners when players, games, previews or sessions are destroyed.
+- Test repeated create/join/leave/load/unload cycles for heap growth and listener leaks.
+- Do not run catastrophic memory/CPU tests against production. Use isolated local/staging tests with small controlled budgets. Success means clean rejection, timeout or cleanup—not crashing the host.
+
+Create safe tests for oversized request bodies, deeply nested JSON, enormous arrays, extreme image dimensions, decompression-bomb-like archive metadata, malformed models, repeated join/leave cycles, slow WebSocket consumers and script-budget exhaustion. Ensure rejection happens before expensive allocation wherever possible.
+
+## F7. Supabase/Postgres-specific hardening
+
+Treat Supabase security as a database authorization problem, not merely client SDK setup.
+
+For every table in an exposed schema:
+- Enable RLS.
+- Set explicit table grants; RLS policies and SQL grants are separate controls.
+- Create explicit policies for SELECT, INSERT, UPDATE and DELETE as appropriate.
+- Test allowed and denied access for `anon` and `authenticated` roles.
+- Use `auth.uid()` or a server-derived verified identity for ownership checks.
+- Do not use user-editable `raw_user_meta_data` as an authorization source.
+- Store privileged roles/claims only in a server-controlled source such as app metadata or a trusted role mapping; still validate permissions server-side.
+- Inspect views, functions, RPCs, triggers, Storage policies and exposed schemas for RLS bypass paths.
+- Review `SECURITY DEFINER` functions, search_path, ownership and grants carefully.
+- Revoke unnecessary default grants. Enabling RLS does not remove table privileges.
+- Keep service/secret keys exclusively server-side; never expose them through `NEXT_PUBLIC_*`, browser bundles, source maps, logs or error messages.
+- Never use a privileged service key in browser code.
+- Ensure user-supplied `user_id`, `owner_id`, `role`, `balance`, `is_admin`, `verified`, `published`, and `permissions` cannot override server-derived values.
+- Verify private Storage bucket policies separately from database table policies.
+- Test signed URL expiry and authorization.
+- Add SQL regression tests and run `supabase test db` if available in the actual CLI workflow.
+
+Do not assume an RLS policy is secure because it compiles. Test cross-account denial with two real test identities in a local/staging Supabase project.
+
+## F8. WebSocket and multiplayer-specific security
+
+Audit BOTH the existing Studio sync server and the new published-game server.
+
+- Authenticate a socket before accepting room membership or sensitive messages.
+- Validate the exact `Origin` against an allowlist to prevent cross-site WebSocket hijacking.
+- Bind the authenticated Supabase subject to the server-side socket context; never trust `playerId`, `userId`, `ownerId`, `admin`, or role fields in packets.
+- Authorize every packet against the current user, game, room and action. A successful handshake does not authorize every later operation.
+- Use strict versioned schemas for every packet type and reject unknown fields/types where appropriate.
+- Use payload limits, rate limits, per-room/per-user quotas, heartbeats, idle timeouts and backpressure.
+- Never broadcast private profile fields, email addresses, access tokens, internal moderation state or server secrets.
+- Prevent clients from choosing another player's identity or overwriting another player's transform.
+- Validate sequence numbers, timestamps and movement-update rates; stale/replayed messages must not roll state backward.
+- Validate server-side actions such as damage, inventory changes, purchases, tool use and physics events.
+- A guessed room ID must not grant access. Enforce private/invite-only room permissions.
+- Avoid logging full socket auth payloads or tokens.
+- On disconnect, remove presence, subscriptions, timers, player entities, buffers, listeners and queued messages.
+- Slow clients must not grow unbounded send queues or stall the server.
+
+Create negative tests for forged user IDs/player IDs, joining another user's private room, unauthorized Studio edits, fake admin packets, oversized messages, message floods, invalid schemas, stale/replayed state updates and cross-origin socket handshakes.
+
+## F9. Secure BloxScript and creator-created content
+
+BloxScript is an attack surface because Blockyard users can author scripts. A scripting language is not safe merely because it is not JavaScript.
+
+- Never evaluate BloxScript by passing it into host `eval`, `new Function`, Node `vm` without suitable isolation, or arbitrary dynamic import.
+- Keep a strict allowlist of available APIs, objects, services and capabilities.
+- User scripts must not access `process`, filesystem, environment variables, arbitrary network sockets, database credentials, internal server APIs or host globals.
+- Separate client scripts and server scripts. Server-only capabilities must never be exposed to client scripts.
+- Every server API invoked from a client script independently authenticates, authorizes and validates parameters.
+- Add instruction, time, recursion, memory/table, event and output budgets.
+- Infinite loops, recursive explosions, huge table creation, massive event firing and deeply nested values must terminate safely.
+- One player's script must not read another player's private data or server secrets.
+- Validate RemoteEvent/RemoteFunction-like calls on the server.
+- Clients must not decide their own currency, health, inventory, admin status, game ownership, damage, purchase result or trusted physics state.
+- Test sandbox boundaries with harmless capability probes and expected-denial tests in local/staging only.
+- Document the supported BloxScript API and mark unsupported Roblox APIs honestly.
+
+## F10. Dependency, build and software supply-chain security
+
+- Identify whether the project uses Bun, npm, pnpm or multiple package managers. Do not create conflicting lockfiles.
+- Run the correct dependency audit for the actual package manager and lockfile.
+- Check direct and transitive packages against GitHub Advisories, OSV and NVD.
+- Check Next.js, React, React Server Components, Three.js, WebSocket libraries, parsers, image/model decoders, authentication libraries and build tooling.
+- Prioritize relevant vulnerabilities with confirmed affected versions and reachable code paths, especially CISA KEV items where relevant.
+- Do not blindly run `npm audit fix --force` or large major-version upgrades. Review advisories, changelogs and compatibility, then test.
+- Remove unused dependencies and suspicious install scripts.
+- Keep production dependencies locked/reproducible using the existing package manager.
+- Add Dependabot or equivalent dependency alert/update workflow where repository hosting supports it.
+- Add secret scanning and check repository history for `.env` and credentials. If a real secret was committed, rotate it; removing the visible line is not enough.
+- Use least-privilege CI tokens and pin third-party CI actions to trusted immutable versions/SHAs where appropriate.
+- Consider an SBOM for release builds and document its generation.
+- Verify production build output, source maps and static files do not expose secrets or internal-only data.
+
+
+## F11. Security tools and controlled testing workflow
+
+Choose tools that match the actual repository; do not install unnecessary or untrusted scanners. Consider:
+- `npm audit` or the package-manager equivalent for dependency advisories.
+- OSV-Scanner for lockfile dependency analysis: https://google.github.io/osv-scanner/ .
+- GitHub Dependabot alerts and dependency review if hosted on GitHub.
+- Gitleaks or an equivalent secret scanner.
+- Semgrep with maintained JavaScript/TypeScript/Next.js security rules.
+- CodeQL where available.
+- TypeScript strict checks and ESLint security-relevant rules.
+- OWASP ZAP Baseline against localhost or explicitly authorized Blockyard staging only. Do not run active/destructive scans against public third-party websites or production.
+- Playwright integration tests with separate synthetic test accounts.
+- SQL/RLS policy tests through the Supabase CLI.
+- Property-based tests and fuzzing for parsers, serialization, packet validation and BloxScript boundaries.
+
+For each tool, record its version, command, scope and outcome. Triage findings manually. A scanner warning is not automatically a confirmed exploitable vulnerability; a clean scan is not proof of security.
+
+Run tests in this order:
+1. Static code and secret scanning.
+2. Dependency/advisory audit.
+3. Unit tests and regression tests.
+4. RLS and database tests.
+5. Local API and WebSocket authorization tests.
+6. Browser tests with two authenticated users and one unauthenticated session.
+7. Controlled resource-limit and fuzz tests in an isolated local/staging environment.
+8. Build/deployment configuration review.
+
+## F12. Security headers, transport and deployment boundaries
+
+Inspect hosting and deployment configuration for the website, Supabase, Studio sync service and game server.
+
+- Enforce HTTPS/WSS in production.
+- Redirect insecure HTTP to HTTPS at the hosting edge where appropriate.
+- Set secure cookies with HttpOnly, Secure and suitable SameSite attributes where the auth model requires cookies.
+- Configure CSP and other security headers based on actual app behavior. Avoid policies so broad they provide no meaningful protection.
+- Set exact CORS and WebSocket origin allowlists.
+- Avoid public admin/debug endpoints.
+- Disable verbose stack traces and debug routes in production.
+- Apply least-privilege process/container permissions.
+- Keep production secrets in host secret management, not the repository.
+- Restrict outbound network access where feasible for services that fetch external URLs.
+- Separate the public web app from the internal game-server management interface.
+- Protect health/metrics endpoints; expose only non-sensitive health status publicly.
+- Document reverse-proxy/WebSocket timeout and body-size settings.
+- Ensure rate limits are enforced server-side and cannot be bypassed by changing a client setting.
+
+## F13. Mandatory security deliverables
+
+In addition to the multiplayer/Supabase deliverables, create:
+
+1. `SECURITY_AUDIT.md` — dated audit report with scope, architecture, sources reviewed, tools run, confirmed vulnerabilities, suspected risks, false positives and untested areas.
+2. `SECURITY_THREAT_MODEL.md` — assets, trust boundaries, attacker types, abuse cases, threats, mitigations and residual risks for Studio, published games, Supabase, Storage, OAuth, WebSockets and BloxScript.
+3. `SECURITY_TEST_PLAN.md` — test cases for authentication, login bypass, authorization, cross-account IDOR, XSS, CSRF, WebSocket abuse, resource exhaustion, file uploads, dependency risks and RLS.
+4. `SECURITY_FIXES.md` — every actual code fix, affected file, root cause, before/after behavior and regression test.
+5. `SECURITY_DEPENDENCIES.md` — dependency scan results, package versions, advisory links, affected-version analysis, update decisions and remaining risk.
+6. `SECURITY_OPERATIONS.md` — secret rotation, backups, incident response basics, logging/monitoring, patching cadence and production configuration checklist.
+7. Automated security regression tests in the existing test structure.
+8. A security checklist in README or the release process.
+
+Prioritize findings as follows:
+- Critical: unauthenticated remote compromise, auth bypass, cross-account access to private data, secret leakage, privilege escalation, arbitrary server code execution, or an exploitable critical dependency reachable in production.
+- High: cross-account data modification, stored XSS with sensitive session impact, server-side script sandbox escape, high-impact WebSocket authorization bypass, serious resource exhaustion or exposed admin function.
+- Medium: limited unauthorized data access, reflected/self-XSS with constraints, missing hardening requiring additional conditions, moderate resource abuse.
+- Low/Informational: defense-in-depth gaps, non-sensitive metadata exposure, minor hardening and documentation issues.
+
+For every finding record:
+- Finding ID and severity.
+- CWE and OWASP mapping where appropriate.
+- Affected file/component/endpoint/table.
+- Evidence and reproducible local test case (safe and non-destructive).
+- Preconditions and likely impact.
+- Whether it is confirmed, suspected or not applicable.
+- Exact remediation.
+- Regression test name and result.
+- Residual limitations.
+
+Do not publish secrets, real personal data or operational exploit instructions in the report. A finding must be reproducible by the project owner without attacking an external system.
+
+## F14. Security release gate and acceptance criteria
+
+Do not call Blockyard production-ready merely because the login page works or a scanner shows no findings.
+
+Before recommending a public launch:
+- No known unresolved Critical finding.
+- No known unresolved High finding without documented risk acceptance and mitigation plan from the owner.
+- All privileged endpoints enforce server-side identity and authorization.
+- Cross-account tests show private projects, assets, profiles and room state are isolated.
+- No client can self-assign admin, ownership, currency, purchase or trusted player identity.
+- Supabase RLS and grants have negative tests and pass.
+- WebSocket auth, origin validation, packet validation, quotas and cleanup have tests.
+- XSS and CSRF tests are run for relevant flows.
+- Upload, request, script, world and memory limits exist and are enforced before expensive allocation.
+- No unresolved known-exploited dependency vulnerability affects a reachable production component.
+- Secret scanning finds no active credentials in source or build artifacts.
+- Production build and type checking pass without ignored TypeScript errors.
+- Security logs contain useful audit events but never raw passwords, bearer tokens, refresh tokens or secret keys.
+- Documentation identifies functionality that is still demo-only or not server-authoritative.
+
+If a full audit is too large for one run, do not pretend it is complete. Finish the highest-risk vertical slice first: login/session verification, authorization and user-ID spoofing, Supabase RLS/grants, WebSocket room membership, XSS sinks, resource limits and dependency/secret scanning. Then list every unreviewed area with explicit status and next steps.
+
+## F15. Required final security summary
+
+In the final response, add a security summary table with these columns:
+
+| Area | Status | Confirmed findings | Fixes made | Tests run | Remaining risk |
+
+Use only these status labels: PASS (tested), PARTIAL (some controls implemented or tests incomplete), FAIL (confirmed unresolved issue), NOT TESTED, or NOT APPLICABLE.
+
+Separately list:
+- Public vulnerability sources and advisories actually consulted.
+- Installed dependency versions with relevant advisories.
+- Confirmed vulnerabilities patched.
+- Suspected findings not yet confirmed.
+- Exact security tests run and results.
+- Tests that could not be run and why.
+- Features still local-only, client-authoritative or demo-only.
+- Steps the owner must complete in Supabase/hosting dashboards.
+
+Do not write “fully secure,” “unhackable,” or “all vulnerabilities fixed.” Security is continuous. State audit scope and limitations honestly.
+
+**Security instruction:** Before implementing new multiplayer functionality, inspect and address the highest-risk security weaknesses in the affected authentication, authorization, Supabase and WebSocket paths. Build the feature securely from the beginning. Do not postpone authentication and authorization hardening until after multiplayer is connected.
